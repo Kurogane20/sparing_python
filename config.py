@@ -75,6 +75,13 @@ class TimingConfig:
     data_send_count: int = 30  # Jumlah data sebelum kirim
     wifi_check_interval: int = 1  # detik
 
+import dataclasses as _dc
+
+def _safe_load(cls, data: dict):
+    """Buat dataclass dari dict, abaikan key yang tidak dikenal."""
+    valid = {f.name for f in _dc.fields(cls)}
+    return cls(**{k: v for k, v in data.items() if k in valid})
+
 @dataclass
 class AppConfig:
     """Konfigurasi utama aplikasi"""
@@ -114,15 +121,15 @@ class AppConfig:
                     config_dict = json.load(f)
                 
                 if "server" in config_dict:
-                    self.server = ServerConfig(**config_dict["server"])
+                    self.server = _safe_load(ServerConfig, config_dict["server"])
                 if "modbus" in config_dict:
-                    self.modbus = ModbusConfig(**config_dict["modbus"])
+                    self.modbus = _safe_load(ModbusConfig, config_dict["modbus"])
                 if "offsets" in config_dict:
-                    self.offsets = SensorOffsets(**config_dict["offsets"])
+                    self.offsets = _safe_load(SensorOffsets, config_dict["offsets"])
                 if "network" in config_dict:
-                    self.network = NetworkConfig(**config_dict["network"])
+                    self.network = _safe_load(NetworkConfig, config_dict["network"])
                 if "timing" in config_dict:
-                    self.timing = TimingConfig(**config_dict["timing"])
+                    self.timing = _safe_load(TimingConfig, config_dict["timing"])
                 if "data_backup_file" in config_dict:
                     self.data_backup_file = config_dict["data_backup_file"]
                     
