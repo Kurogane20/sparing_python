@@ -562,12 +562,19 @@ class MainWindow(QMainWindow):
             lb.setCursor(Qt.CursorShape.PointingHandCursor)
             return lb
 
+        def _on_fullscreen(_):
+            if self.isFullScreen(): self.showNormal()
+            else: self.showFullScreen()
+
+        def _on_settings(_):
+            SettingsDialog(self).exec()
+
         fs = chip("⛶ FULLSCREEN")
-        fs.mousePressEvent = lambda _: (self.showNormal() if self.isFullScreen() else self.showFullScreen())
+        fs.mousePressEvent = _on_fullscreen
         hl.addWidget(fs)
 
         st = chip("⚙ SETTINGS", T.WARN, T.WARN)
-        st.mousePressEvent = lambda _: SettingsDialog(self).exec()
+        st.mousePressEvent = _on_settings
         hl.addWidget(st)
 
         hl.addSpacing(4)
