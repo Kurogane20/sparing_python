@@ -419,7 +419,11 @@ class SettingsDialog(QDialog):
         vb.addWidget(br)
         note = QLabel("pH: nilai+offset (maks 14) | TSS/Debit: nilai−offset")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
-        vb.addWidget(note); vb.addStretch(); return w
+        vb.addWidget(note)
+        note2 = QLabel("⚠ Offset aktif di mode sensor nyata. Mode dummy tidak menggunakan offset.")
+        note2.setStyleSheet(f"color:{T.WARN};font-size:9px;"); note2.setWordWrap(True)
+        vb.addWidget(note2)
+        vb.addStretch(); return w
 
     def _toggle(self):
         if self.e_pass.echoMode() == QLineEdit.EchoMode.Password:
@@ -464,6 +468,10 @@ class SettingsDialog(QDialog):
         config.offsets.tss_offset      = self.s_tss.value()
         config.offsets.debit_offset    = self.s_dbt.value()
         config.save()
+        # Refresh sidebar labels di MainWindow
+        mw = self.parent()
+        if hasattr(mw, 'refresh_sidebar'):
+            mw.refresh_sidebar()
         QMessageBox.information(self, "Tersimpan", "Pengaturan berhasil disimpan.")
         self.accept()
 
@@ -675,6 +683,13 @@ class MainWindow(QMainWindow):
         self._kl_conn = s_kl.row("Koneksi", "Checking…", T.FG2)
         self._kl_uid  = s_kl.row("UID", config.server.uid_2)
         vb.addWidget(s_kl)
+
+        # Offset Kalibrasi
+        s_off = Section("Offset Kalibrasi")
+        self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_offset:+.2f}")
+        self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_offset:+.2f} mg/L")
+        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m³/j")
+        vb.addWidget(s_off)
 
         # Buffer
         s_buf = Section("Data Buffer")
@@ -903,6 +918,13 @@ class MainWindow(QMainWindow):
             self._alarm_title.setText("✓ Tidak ada alarm")
             self._alarm_title.setStyleSheet(f"color:{T.OK};font-weight:bold;font-size:10px;border:none;")
             self._alarm_desc.setText("Semua parameter dalam batas normal.")
+
+    def refresh_sidebar(self):
+        """Update sidebar setelah config berubah melalui SettingsDialog."""
+        self._kl_uid.setText(config.server.uid_2)
+        self._off_ph.setText(f"{config.offsets.ph_offset:+.2f}")
+        self._off_tss.setText(f"{config.offsets.tss_offset:+.2f} mg/L")
+        self._off_dbt.setText(f"{config.offsets.debit_offset:+.2f} m³/j")
 
 # ── Factory ───────────────────────────────────────────────────
 
