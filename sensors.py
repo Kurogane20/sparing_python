@@ -129,10 +129,15 @@ class ModbusSensorReader:
             return config.offsets.tss_offset, False
 
     def read_debit(self) -> Tuple[float, bool]:
+        """Dispatch ke metode baca sesuai tipe sensor debit di config."""
+        if config.modbus.debit_closed_channel:
+            return self._read_debit_closed()
+        return self._read_debit_open()
+
+    def _read_debit_open(self) -> Tuple[float, bool]:
         """
-        Baca sensor Debit (Slave ID: 1, Register: 0-29)
-        Format: Double ABCDEFGH (64-bit)
-        Returns: (nilai_debit, sukses)
+        Baca sensor Debit tipe saluran terbuka (open channel)
+        Format: Double ABCDEFGH (64-bit), register 15-18
         """
         if not self.connected or not self.client:
             return 0.0, False
@@ -145,7 +150,7 @@ class ModbusSensorReader:
             )
 
             if result.isError():
-                print(f"[ERROR] Gagal membaca sensor Debit: {result}")
+                print(f"[ERROR] Gagal membaca sensor Debit (open): {result}")
                 return 0.0, False
 
             reg_a = result.registers[15]
@@ -154,11 +159,42 @@ class ModbusSensorReader:
             reg_d = result.registers[18]
             combined = (reg_a << 48) | (reg_b << 32) | (reg_c << 16) | reg_d
             debit_raw = struct.unpack('d', struct.pack('Q', combined))[0]
-            debit_value = self._apply_debit_offset(debit_raw)
-            return debit_value, True
+            return self._apply_debit_offset(debit_raw), True
 
         except Exception as e:
-            print(f"[ERROR] Exception membaca Debit: {e}")
+            print(f"[ERROR] Exception membaca Debit (open): {e}")
+            return 0.0, False
+
+    def _read_debit_closed(self) -> Tuple[float, bool]:
+        """
+        Baca sensor Debit tipe saluran tertutup (closed channel)
+        Format: Float CDAB (32-bit word-swap)
+          register[0] = low word  (debitD)
+          register[1] = high word (debitC)
+        combined = (register[1] << 16) | register[0]
+        """
+        if not self.connected or not self.client:
+            return 0.0, False
+
+        try:
+            result = self.client.read_holding_registers(
+                address=0,
+                count=2,
+                slave=config.modbus.debit_slave_id
+            )
+
+            if result.isError():
+                print(f"[ERROR] Gagal membaca sensor Debit (closed): {result}")
+                return 0.0, False
+
+            high_word = result.registers[1]   # debitC (Bagian A)
+            low_word  = result.registers[0]   # debitD (Bagian B)
+            combined  = (high_word << 16) | low_word
+            debit_raw = struct.unpack('f', struct.pack('I', combined))[0]
+            return self._apply_debit_offset(debit_raw), True
+
+        except Exception as e:
+            print(f"[ERROR] Exception membaca Debit (closed): {e}")
             return 0.0, False
 
     def read_all_sensors(self) -> SensorData:
@@ -185,7 +221,8 @@ class ModbusSensorReader:
         # Baca Debit
         debit, debit_ok = self.read_debit()
         sensor_data.debit = debit
-        status_debit = f"OK ({debit:.2f} m3/jam)" if debit_ok else "GAGAL"
+        debit_type = "closed" if config.modbus.debit_closed_channel else "open"
+        status_debit = f"OK ({debit:.2f} m3/jam) [{debit_type}]" if debit_ok else "GAGAL"
         print(f"[MODBUS] Debit (Slave {config.modbus.debit_slave_id:>2}) -> {status_debit}")
 
         total_ok = sum([ph_ok, tss_ok, debit_ok])

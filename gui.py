@@ -466,6 +466,22 @@ class SettingsDialog(QDialog):
             self._param_checks[name] = cb
 
         vb.addWidget(g)
+
+        # Tipe sensor debit
+        g2 = QGroupBox("Konfigurasi Sensor Debit")
+        g2vb = QVBoxLayout(g2); g2vb.setSpacing(6); g2vb.setContentsMargins(10, 16, 10, 10)
+        self._cb_closed = QCheckBox("Saluran Tertutup (Closed Channel)")
+        self._cb_closed.setChecked(config.modbus.debit_closed_channel)
+        self._cb_closed.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        desc_closed = QLabel(
+            "Centang: Float 32-bit, reg[1]<<16|reg[0]  •  Kosong: Double 64-bit, reg 15-18"
+        )
+        desc_closed.setStyleSheet(f"color:{T.FG3};font-size:9px;")
+        desc_closed.setWordWrap(True)
+        g2vb.addWidget(self._cb_closed)
+        g2vb.addWidget(desc_closed)
+        vb.addWidget(g2)
+
         note = QLabel("Minimal 1 parameter harus aktif. Perubahan langsung terlihat setelah Simpan.")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
         vb.addWidget(note)
@@ -517,6 +533,8 @@ class SettingsDialog(QDialog):
         selected = [n for n, cb in self._param_checks.items() if cb.isChecked()]
         if selected:
             config.display_sensors = selected
+        # Tipe sensor debit
+        config.modbus.debit_closed_channel = self._cb_closed.isChecked()
         config.save()
         # Refresh sidebar labels di MainWindow
         mw = self.parent()

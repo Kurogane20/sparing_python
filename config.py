@@ -48,6 +48,11 @@ class ModbusConfig:
     tss_slave_id: int = 10
     debit_slave_id: int = 1
 
+    # Tipe sensor debit:
+    #   False = saluran terbuka (open channel)  → 64-bit double, reg 15-18
+    #   True  = saluran tertutup (closed channel) → 32-bit float, reg 0-1
+    debit_closed_channel: bool = False
+
     def __post_init__(self):
         if not self.port:
             self.port = _default_serial_port()
