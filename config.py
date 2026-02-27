@@ -92,13 +92,17 @@ class AppConfig:
     timing: TimingConfig
     data_backup_file: str = "data_backup.json"
     
+    # Sensor yang ditampilkan di GUI (bisa dikonfigurasi via Settings)
+    ALL_SENSORS = ["pH", "TSS", "DEBIT", "COD", "NH3-N"]
+
     def __init__(self):
         self.server = ServerConfig()
         self.modbus = ModbusConfig()
         self.offsets = SensorOffsets()
         self.network = NetworkConfig()
         self.timing = TimingConfig()
-    
+        self.display_sensors: list = list(self.ALL_SENSORS)  # tampilkan semua by default
+
     def save(self):
         """Simpan konfigurasi ke file JSON"""
         config_dict = {
@@ -107,19 +111,20 @@ class AppConfig:
             "offsets": asdict(self.offsets),
             "network": asdict(self.network),
             "timing": asdict(self.timing),
-            "data_backup_file": self.data_backup_file
+            "data_backup_file": self.data_backup_file,
+            "display_sensors": self.display_sensors,
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config_dict, f, indent=4)
         print(f"[INFO] Konfigurasi disimpan ke {CONFIG_FILE}")
-    
+
     def load(self):
         """Muat konfigurasi dari file JSON"""
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE, 'r') as f:
                     config_dict = json.load(f)
-                
+
                 if "server" in config_dict:
                     self.server = _safe_load(ServerConfig, config_dict["server"])
                 if "modbus" in config_dict:
@@ -132,7 +137,11 @@ class AppConfig:
                     self.timing = _safe_load(TimingConfig, config_dict["timing"])
                 if "data_backup_file" in config_dict:
                     self.data_backup_file = config_dict["data_backup_file"]
-                    
+                if "display_sensors" in config_dict:
+                    val = config_dict["display_sensors"]
+                    if isinstance(val, list) and val:
+                        self.display_sensors = val
+
                 print(f"[INFO] Konfigurasi dimuat dari {CONFIG_FILE}")
             except Exception as e:
                 print(f"[ERROR] Gagal memuat konfigurasi: {e}")

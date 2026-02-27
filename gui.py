@@ -13,7 +13,7 @@ from typing import List
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QProgressBar,
+    QLabel, QFrame, QProgressBar, QCheckBox,
     QGraphicsDropShadowEffect, QScrollArea,
     QDialog, QLineEdit, QDoubleSpinBox, QPushButton, QMessageBox,
     QTabWidget, QFormLayout, QGroupBox
@@ -42,6 +42,18 @@ def get_mem() -> str:
         avail = int(lines[2].split()[1])
         return f"{(total-avail)/total*100:.0f}%"
     except Exception: return "N/A"
+
+def get_rpi_voltage() -> str:
+    try:
+        r = subprocess.run(
+            ["vcgencmd", "measure_volts", "core"],
+            capture_output=True, text=True, timeout=2
+        )
+        if r.returncode == 0:
+            return r.stdout.strip().replace("volt=", "")
+    except Exception:
+        pass
+    return "N/A"
 
 def get_ip() -> str:
     import socket
@@ -348,7 +360,8 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._t_server(), "Server KLHK")
         tabs.addTab(self._t_wifi(),   "WiFi")
-        tabs.addTab(self._t_offset(), "Offset Sensor")
+        tabs.addTab(self._t_offset(),  "Offset Sensor")
+        tabs.addTab(self._t_params(),  "Parameter")
         root.addWidget(tabs)
 
         bl = QHBoxLayout(); bl.addStretch()
@@ -425,6 +438,39 @@ class SettingsDialog(QDialog):
         vb.addWidget(note2)
         vb.addStretch(); return w
 
+    def _t_params(self):
+        w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
+        g = QGroupBox("Parameter yang Ditampilkan")
+        gvb = QVBoxLayout(g); gvb.setSpacing(8); gvb.setContentsMargins(10, 16, 10, 10)
+
+        # Label + unit info per sensor
+        INFO = {
+            "pH":    "Derajat keasaman air (tanpa satuan)",
+            "TSS":   "Total Suspended Solid (mg/L)",
+            "DEBIT": "Laju aliran air (m³/jam)",
+            "COD":   "Chemical Oxygen Demand (mg/L)",
+            "NH3-N": "Amonia nitrogen (mg/L)",
+        }
+        self._param_checks = {}
+        for name in config.ALL_SENSORS:
+            row = QHBoxLayout(); row.setSpacing(8)
+            cb = QCheckBox(name)
+            cb.setChecked(name in config.display_sensors)
+            cb.setStyleSheet(
+                f"color:{T.FG1};font-size:11px;font-weight:bold;"
+            )
+            desc = QLabel(INFO.get(name, ""))
+            desc.setStyleSheet(f"color:{T.FG3};font-size:9px;")
+            row.addWidget(cb); row.addWidget(desc); row.addStretch()
+            gvb.addLayout(row)
+            self._param_checks[name] = cb
+
+        vb.addWidget(g)
+        note = QLabel("Minimal 1 parameter harus aktif. Perubahan langsung terlihat setelah Simpan.")
+        note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
+        vb.addWidget(note)
+        vb.addStretch(); return w
+
     def _toggle(self):
         if self.e_pass.echoMode() == QLineEdit.EchoMode.Password:
             self.e_pass.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -467,6 +513,10 @@ class SettingsDialog(QDialog):
         config.offsets.ph_offset       = self.s_ph.value()
         config.offsets.tss_offset      = self.s_tss.value()
         config.offsets.debit_offset    = self.s_dbt.value()
+        # Simpan parameter yang dipilih (minimal 1)
+        selected = [n for n, cb in self._param_checks.items() if cb.isChecked()]
+        if selected:
+            config.display_sensors = selected
         config.save()
         # Refresh sidebar labels di MainWindow
         mw = self.parent()
@@ -616,6 +666,7 @@ class MainWindow(QMainWindow):
                 f"padding:2px 8px;font-size:9px;font-weight:bold;"
             )
             self._chip_ram.setText(f"💾 {get_mem()}")
+            self._v_rpi.setText(get_rpi_voltage())
 
     # ─────────────────────────────────────── Cards ──
 
@@ -629,6 +680,7 @@ class MainWindow(QMainWindow):
         self.cards = {}
         for name, (color, unit, lo, hi) in T.SENSORS.items():
             card = SensorCard(name, color, unit, lo, hi)
+            card.setVisible(name in config.display_sensors)
             hl.addWidget(card)
             self.cards[name] = card
 
@@ -666,11 +718,9 @@ class MainWindow(QMainWindow):
         s_mb._vb.addLayout(led_row)
         vb.addWidget(s_mb)
 
-        # Kelistrikan
-        s_el = Section("Kelistrikan")
-        self._v_volt  = s_el.row("Tegangan", "0.00 V")
-        self._v_curr  = s_el.row("Arus",     "0.00 A")
-        self._v_power = s_el.row("Daya",     "0.00 W")
+        # Sistem RPi
+        s_el = Section("Sistem RPi")
+        self._v_rpi = s_el.row("Tegangan Core", get_rpi_voltage(), T.CYAN)
         vb.addWidget(s_el)
 
         # Server 1
@@ -865,10 +915,6 @@ class MainWindow(QMainWindow):
         self._mb_stat.setText("Running")
         self._mb_stat.setStyleSheet(f"color:{T.OK};font-size:10px;font-weight:bold;border:none;")
 
-        self._v_volt.setText(f"{data.voltage:.2f} V")
-        self._v_curr.setText(f"{data.current:.2f} A")
-        self._v_power.setText(f"{data.voltage*data.current:.2f} W")
-
         self._check_alarms(data)
 
     def _on_conn(self, ok: bool):
@@ -925,6 +971,12 @@ class MainWindow(QMainWindow):
         self._off_ph.setText(f"{config.offsets.ph_offset:+.2f}")
         self._off_tss.setText(f"{config.offsets.tss_offset:+.2f} mg/L")
         self._off_dbt.setText(f"{config.offsets.debit_offset:+.2f} m³/j")
+        self.refresh_cards()
+
+    def refresh_cards(self):
+        """Tampilkan/sembunyikan sensor card sesuai config.display_sensors."""
+        for name, card in self.cards.items():
+            card.setVisible(name in config.display_sensors)
 
 # ── Factory ───────────────────────────────────────────────────
 
