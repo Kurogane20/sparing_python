@@ -716,41 +716,89 @@ class MainWindow(QMainWindow):
 
     def _mk_footer(self, root):
         ft = QFrame()
-        ft.setFixedHeight(42)
+        ft.setFixedHeight(50)
         ft.setStyleSheet(
             f"QFrame{{background:{T.PANEL};border-top:1px solid {T.BORDER};}}"
         )
         hl = QHBoxLayout(ft)
-        hl.setContentsMargins(14, 4, 14, 4)
+        hl.setContentsMargins(14, 0, 14, 0)
         hl.setSpacing(0)
 
-        def stat_block(icon, label, init_val, sub, color):
-            f = QFrame()
-            f.setStyleSheet("background:transparent;border:none;")
-            fl = QHBoxLayout(f); fl.setSpacing(8)
-            il = QLabel(icon)
-            il.setStyleSheet(f"color:{color};font-size:16px;border:none;")
-            fl.addWidget(il)
-            vl = QVBoxLayout(); vl.setSpacing(0)
-            l1 = QLabel(label); l1.setStyleSheet(f"color:{T.FG3};font-size:8px;")
-            lv = QLabel(init_val); lv.setStyleSheet(f"color:{T.FG1};font-weight:bold;font-size:13px;")
-            l3 = QLabel(sub); l3.setStyleSheet(f"color:{color};font-size:8px;")
-            vl.addWidget(l1); vl.addWidget(lv); vl.addWidget(l3)
-            fl.addLayout(vl)
-            return f, lv
+        # Left: port / baud info
+        left = QWidget(); left.setStyleSheet("background:transparent;")
+        ll = QVBoxLayout(left)
+        ll.setSpacing(2); ll.setContentsMargins(0, 0, 0, 0)
+        ll.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        port_lbl = QLabel(f"USB  {config.modbus.port}")
+        port_lbl.setStyleSheet(
+            f"color:{T.FG2};font-size:11px;font-weight:bold;border:none;"
+        )
+        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  AQMS v2.0")
+        baud_lbl.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
+        ll.addWidget(port_lbl)
+        ll.addWidget(baud_lbl)
+        hl.addWidget(left)
 
-        u_blk, self._f_uptime = stat_block("⏱", "Uptime", "0h 0m", "Raspberry Pi OS", T.OK)
-        s_blk, self._f_sent   = stat_block("📤", "Terkirim Hari Ini", "0", "USB RS485", T.BLUE)
-        a_blk, self._f_alarms = stat_block("⚠", "Alarm Aktif", "0", "Normal", T.ERR)
-        k_blk, _              = stat_block("✅", "Kepatuhan", "94.2%", "Target >90%", T.OK)
+        hl.addStretch()
 
-        hl.addWidget(u_blk)
+        # Center: 4 stat blocks (label + value, 2 rows)
+        def stat(label, init_val, color=T.FG1):
+            w = QWidget(); w.setStyleSheet("background:transparent;")
+            vb = QVBoxLayout(w)
+            vb.setSpacing(1); vb.setContentsMargins(18, 5, 18, 5)
+            vb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb = QLabel(label.upper())
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setStyleSheet(
+                f"color:{T.FG3};font-size:8px;letter-spacing:0.5px;border:none;"
+            )
+            lv = QLabel(init_val)
+            lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lv.setStyleSheet(
+                f"color:{color};font-weight:bold;font-size:15px;"
+                f"font-family:'{T.MONO}';border:none;"
+            )
+            vb.addWidget(lb); vb.addWidget(lv)
+            return w, lv
+
+        def vsep():
+            """Thin vertical divider between stat blocks."""
+            c = QWidget(); c.setStyleSheet("background:transparent;")
+            ch = QHBoxLayout(c); ch.setContentsMargins(0, 8, 0, 8)
+            line = QFrame(); line.setFrameShape(QFrame.Shape.VLine)
+            line.setFixedWidth(1)
+            line.setStyleSheet(f"background:{T.BORDER};border:none;")
+            ch.addWidget(line)
+            return c
+
+        u_blk, self._f_uptime = stat("Uptime",    "0h 0m",  T.OK)
+        s_blk, self._f_sent   = stat("Terkirim",  "0 data", T.BLUE)
+        a_blk, self._f_alarms = stat("Alarm",     "0",      T.FG1)
+        k_blk, _              = stat("Kepatuhan", "94.2%",  T.OK)
+
+        for i, w in enumerate([u_blk, s_blk, a_blk, k_blk]):
+            if i > 0:
+                hl.addWidget(vsep())
+            hl.addWidget(w)
+
         hl.addStretch()
-        hl.addWidget(s_blk)
-        hl.addStretch()
-        hl.addWidget(a_blk)
-        hl.addStretch()
-        hl.addWidget(k_blk)
+
+        # Right: online / offline pill
+        right = QWidget(); right.setStyleSheet("background:transparent;")
+        rl = QVBoxLayout(right)
+        rl.setSpacing(2); rl.setContentsMargins(0, 0, 0, 0)
+        rl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        self._ft_conn = QLabel("● ONLINE")
+        self._ft_conn.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._ft_conn.setStyleSheet(
+            f"color:{T.OK};font-size:10px;font-weight:bold;border:none;"
+        )
+        brand = QLabel("© Mitra Mutiara")
+        brand.setAlignment(Qt.AlignmentFlag.AlignRight)
+        brand.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
+        rl.addWidget(self._ft_conn)
+        rl.addWidget(brand)
+        hl.addWidget(right)
 
         root.addWidget(ft)
 
@@ -761,7 +809,9 @@ class MainWindow(QMainWindow):
     def _uptime(self):
         d = datetime.now() - self._t0
         h, m = d.seconds // 3600, (d.seconds % 3600) // 60
-        self._f_uptime.setText(f"{d.days}d {h}h {m}m")
+        self._f_uptime.setText(
+            f"{d.days}d {h}h {m}m" if d.days else f"{h}h {m}m"
+        )
 
     # ─────────────────────────────────────── Slots ──
 
@@ -805,13 +855,18 @@ class MainWindow(QMainWindow):
         for lb in (self._mm_conn, self._kl_conn):
             lb.setText(txt)
             lb.setStyleSheet(f"color:{col};font-size:10px;font-weight:bold;border:none;")
+        # Footer pill
+        self._ft_conn.setText("● ONLINE" if ok else "○ OFFLINE")
+        self._ft_conn.setStyleSheet(
+            f"color:{T.OK if ok else T.OFF};font-size:10px;font-weight:bold;border:none;"
+        )
 
     def _on_count(self, cur, mx):
         self._buf_lbl.setText(f"{cur} records")
         self._buf_bar.setValue(int(cur/mx*100) if mx else 0)
 
     def _on_daily(self, n):
-        self._f_sent.setText(str(n))
+        self._f_sent.setText(f"{n} data")
 
     def _check_alarms(self, d: SensorData):
         msgs = []
@@ -822,14 +877,20 @@ class MainWindow(QMainWindow):
         n = len(msgs)
         self._f_alarms.setText(str(n))
         if n:
-            self._f_alarms.setStyleSheet(f"color:{T.ERR};font-weight:bold;font-size:13px;")
+            self._f_alarms.setStyleSheet(
+                f"color:{T.ERR};font-weight:bold;font-size:15px;"
+                f"font-family:'{T.MONO}';border:none;"
+            )
             self._alarm_frame.setStyleSheet(
                 f"background:{T.ERR}18;border:1px solid {T.ERR};border-radius:5px;")
             self._alarm_title.setText(f"⚠ ALARM: {n} parameter")
             self._alarm_title.setStyleSheet(f"color:{T.ERR};font-weight:bold;font-size:10px;border:none;")
             self._alarm_desc.setText("\n".join(msgs))
         else:
-            self._f_alarms.setStyleSheet(f"color:{T.FG1};font-weight:bold;font-size:13px;")
+            self._f_alarms.setStyleSheet(
+                f"color:{T.FG1};font-weight:bold;font-size:15px;"
+                f"font-family:'{T.MONO}';border:none;"
+            )
             self._alarm_frame.setStyleSheet(
                 f"background:{T.OK}18;border:1px solid {T.OK};border-radius:5px;")
             self._alarm_title.setText("✓ Tidak ada alarm")
