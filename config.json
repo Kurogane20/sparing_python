@@ -1,0 +1,42 @@
+{
+    "server": {
+        "server_url_1": "https://sparingapi.mitramutiara.co.id/api/post-data",
+        "secret_key_url_1": "https://sparingapi.mitramutiara.co.id/api/get-key",
+        "uid_1": "admin-LOG",
+        "device_id_1": "DEVICE-002",
+        "server_url_2": "https://sparing.kemenlh.go.id/api/send-hourly",
+        "secret_key_url_2": "https://sparing.kemenlh.go.id/api/secret-sensor",
+        "uid_2": "tesuidp"
+    },
+    "modbus": {
+        "port": "/dev/serial0",
+        "baudrate": 9600,
+        "parity": "N",
+        "stopbits": 1,
+        "bytesize": 8,
+        "timeout": 1.0,
+        "ph_slave_id": 2,
+        "tss_slave_id": 10,
+        "debit_slave_id": 1,
+        "gpio_de_pin": 4,
+        "gpio_re_pin": -1
+    },
+    "offsets": {
+        "ph_offset": 0.0,
+        "tss_offset": 0.0,
+        "debit_offset": 0.0
+    },
+    "network": {
+        "ntp_server": "pool.ntp.org",
+        "connection_check_url": "http://www.google.com",
+        "connection_check_interval": 5,
+        "wifi_ssid": "",
+        "wifi_password": ""
+    },
+    "timing": {
+        "sensor_read_interval": 5,
+        "data_send_count": 30,
+        "wifi_check_interval": 1
+    },
+    "data_backup_file": "data_backup.json"
+}

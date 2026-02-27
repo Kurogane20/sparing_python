@@ -1,0 +1,18 @@
+# AQMS Monitoring System - Dependencies
+# Install dengan: pip install -r requirements.txt
+
+# GUI Framework
+PyQt6>=6.4.0
+
+# Modbus RS485 Communication
+pymodbus>=3.5.0
+pyserial>=3.5
+
+# HTTP Client
+requests>=2.28.0
+
+# Utilities
+python-dateutil>=2.8.0
+
+# Raspberry Pi GPIO (hanya diinstall di RPi)
+RPi.GPIO>=0.7.0
