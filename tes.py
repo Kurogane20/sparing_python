@@ -16,7 +16,7 @@ async def main():
     result = await client.read_holding_registers(
         address=0,
         count=2,
-        device_id=2   # ← ini yang benar
+        device_id=2
     )
 
     if result.isError():
@@ -24,6 +24,6 @@ async def main():
     else:
         print("Register:", result.registers)
 
-    await client.close()
+    client.close()   # ← TANPA await
 
 asyncio.run(main())
