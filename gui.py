@@ -823,7 +823,7 @@ class MainWindow(QMainWindow):
         port_lbl.setStyleSheet(
             f"color:{T.FG2};font-size:11px;font-weight:bold;border:none;"
         )
-        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  AQMS v2.0")
+        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  SPARING v2.0")
         baud_lbl.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
         ll.addWidget(port_lbl)
         ll.addWidget(baud_lbl)
