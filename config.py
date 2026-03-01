@@ -41,7 +41,7 @@ class ModbusConfig:
     parity: str = "N"
     stopbits: int = 1
     bytesize: int = 8
-    timeout: float = 1.0
+    timeout: float = 3.0
 
     # Slave IDs
     ph_slave_id: int = 2
