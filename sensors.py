@@ -18,9 +18,17 @@ import struct
 import time
 from typing import Optional, Tuple
 from pymodbus.client import ModbusSerialClient
+import pymodbus as _pm
 
 from config import config
 from models import SensorData
+
+# pymodbus v3+ → kwarg 'slave=', v2.x → kwarg 'unit='
+_PM_V3 = int(_pm.__version__.split('.')[0]) >= 3
+
+def _sk(slave_id: int) -> dict:
+    """Kembalikan kwarg slave ID yang sesuai versi pymodbus terpasang."""
+    return {'slave': slave_id} if _PM_V3 else {'unit': slave_id}
 
 
 class ModbusSensorReader:
@@ -82,7 +90,7 @@ class ModbusSensorReader:
             result = self.client.read_holding_registers(
                 address=0,
                 count=2,
-                slave=config.modbus.ph_slave_id
+                **_sk(config.modbus.ph_slave_id)
             )
 
             if result.isError():
@@ -110,7 +118,7 @@ class ModbusSensorReader:
             result = self.client.read_holding_registers(
                 address=0,
                 count=5,
-                slave=config.modbus.tss_slave_id
+                **_sk(config.modbus.tss_slave_id)
             )
 
             if result.isError():
@@ -146,7 +154,7 @@ class ModbusSensorReader:
             result = self.client.read_holding_registers(
                 address=0,
                 count=30,
-                slave=config.modbus.debit_slave_id
+                **_sk(config.modbus.debit_slave_id)
             )
 
             if result.isError():
@@ -180,7 +188,7 @@ class ModbusSensorReader:
             result = self.client.read_holding_registers(
                 address=0,
                 count=2,
-                slave=config.modbus.debit_slave_id
+                **_sk(config.modbus.debit_slave_id)
             )
 
             if result.isError():
