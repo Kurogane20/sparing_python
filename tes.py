@@ -1,22 +1,31 @@
-from pymodbus.client import ModbusSerialClient
+import asyncio
+from pymodbus.client import AsyncModbusSerialClient
 
-client = ModbusSerialClient(
-    port="/dev/ttyUSB0",
-    baudrate=9600,
-    parity="N",
-    stopbits=1,
-    bytesize=8,
-    timeout=1
-)
+async def main():
 
-client.connect()
+    client = AsyncModbusSerialClient(
+        port="/dev/ttyUSB0",
+        baudrate=9600,
+        parity="N",
+        stopbits=1,
+        bytesize=8,
+        timeout=1
+    )
 
-# contoh baca slave 1 register 0 sebanyak 2
-result = client.read_holding_registers(2, 0, 2)
+    await client.connect()
 
-if result.isError():
-    print("Gagal baca")
-else:
-    print("Data:", result.registers)
+    # baca slave 2 register 0 sebanyak 2
+    result = await client.read_holding_registers(
+        address=0,
+        count=2,
+        slave=2
+    )
 
-client.close()
+    if result.isError():
+        print("Gagal baca")
+    else:
+        print("Data:", result.registers)
+
+    await client.close()
+
+asyncio.run(main())
