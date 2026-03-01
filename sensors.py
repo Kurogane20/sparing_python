@@ -26,19 +26,20 @@ def _read_regs(client, address: int, count: int, slave_id: int):
     """
     Baca holding registers kompatibel semua versi pymodbus.
     Urutan percobaan:
-      slave=    → pymodbus 3.0 – 3.11
-      unit=     → pymodbus 2.x
-      slave_id= → pymodbus 3.12 (beberapa build)
-      positional (address, count, slave_id) → pymodbus 3.12.1+
+      device_id= → pymodbus 3.12.1+ (confirmed)
+      slave=     → pymodbus 3.0 – 3.11
+      unit=      → pymodbus 2.x
+      slave_id=  → pymodbus 3.12 (beberapa build)
+      positional → fallback
     """
-    for kw in ('slave', 'unit', 'slave_id'):
+    for kw in ('device_id', 'slave', 'unit', 'slave_id'):
         try:
             return client.read_holding_registers(
                 address=address, count=count, **{kw: slave_id}
             )
         except TypeError:
             continue
-    # Coba positional args (pymodbus 3.12.1 tidak terima keyword slave/unit)
+    # Coba positional args
     try:
         return client.read_holding_registers(address, count, slave_id)
     except TypeError:
