@@ -18,17 +18,23 @@ import struct
 import time
 from typing import Optional, Tuple
 from pymodbus.client import ModbusSerialClient
-import pymodbus as _pm
-
 from config import config
 from models import SensorData
 
-# pymodbus v3+ → kwarg 'slave=', v2.x → kwarg 'unit='
-_PM_V3 = int(_pm.__version__.split('.')[0]) >= 3
 
-def _sk(slave_id: int) -> dict:
-    """Kembalikan kwarg slave ID yang sesuai versi pymodbus terpasang."""
-    return {'slave': slave_id} if _PM_V3 else {'unit': slave_id}
+def _read_regs(client, address: int, count: int, slave_id: int):
+    """
+    Baca holding registers kompatibel pymodbus v2 (unit=) dan v3 (slave=).
+    Coba slave= dulu; jika TypeError fall-back ke unit=.
+    """
+    try:
+        return client.read_holding_registers(
+            address=address, count=count, slave=slave_id
+        )
+    except TypeError:
+        return client.read_holding_registers(
+            address=address, count=count, unit=slave_id
+        )
 
 
 class ModbusSensorReader:
@@ -87,11 +93,7 @@ class ModbusSensorReader:
             return 0.0, False
 
         try:
-            result = self.client.read_holding_registers(
-                address=0,
-                count=2,
-                **_sk(config.modbus.ph_slave_id)
-            )
+            result = _read_regs(self.client, 0, 2, config.modbus.ph_slave_id)
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor pH: {result}")
@@ -115,11 +117,7 @@ class ModbusSensorReader:
             return 0.0, False
 
         try:
-            result = self.client.read_holding_registers(
-                address=0,
-                count=5,
-                **_sk(config.modbus.tss_slave_id)
-            )
+            result = _read_regs(self.client, 0, 5, config.modbus.tss_slave_id)
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor TSS: {result}")
@@ -151,11 +149,7 @@ class ModbusSensorReader:
             return 0.0, False
 
         try:
-            result = self.client.read_holding_registers(
-                address=0,
-                count=30,
-                **_sk(config.modbus.debit_slave_id)
-            )
+            result = _read_regs(self.client, 0, 30, config.modbus.debit_slave_id)
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor Debit (open): {result}")
@@ -185,11 +179,7 @@ class ModbusSensorReader:
             return 0.0, False
 
         try:
-            result = self.client.read_holding_registers(
-                address=0,
-                count=2,
-                **_sk(config.modbus.debit_slave_id)
-            )
+            result = _read_regs(self.client, 0, 2, config.modbus.debit_slave_id)
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor Debit (closed): {result}")
