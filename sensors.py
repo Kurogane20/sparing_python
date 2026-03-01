@@ -24,17 +24,21 @@ from models import SensorData
 
 def _read_regs(client, address: int, count: int, slave_id: int):
     """
-    Baca holding registers kompatibel pymodbus v2 (unit=) dan v3 (slave=).
-    Coba slave= dulu; jika TypeError fall-back ke unit=.
+    Baca holding registers kompatibel semua versi pymodbus.
+    Coba nama kwarg slave ID satu per satu hingga berhasil:
+      slave=    → pymodbus 3.0 – 3.11
+      unit=     → pymodbus 2.x
+      slave_id= → pymodbus 3.12+
     """
-    try:
-        return client.read_holding_registers(
-            address=address, count=count, slave=slave_id
-        )
-    except TypeError:
-        return client.read_holding_registers(
-            address=address, count=count, unit=slave_id
-        )
+    for kw in ('slave', 'unit', 'slave_id'):
+        try:
+            return client.read_holding_registers(
+                address=address, count=count, **{kw: slave_id}
+            )
+        except TypeError:
+            continue
+    # Last resort: tanpa kwarg slave (gunakan default client)
+    return client.read_holding_registers(address=address, count=count)
 
 
 class ModbusSensorReader:
