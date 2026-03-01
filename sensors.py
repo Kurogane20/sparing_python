@@ -25,10 +25,11 @@ from models import SensorData
 def _read_regs(client, address: int, count: int, slave_id: int):
     """
     Baca holding registers kompatibel semua versi pymodbus.
-    Coba nama kwarg slave ID satu per satu hingga berhasil:
+    Urutan percobaan:
       slave=    → pymodbus 3.0 – 3.11
       unit=     → pymodbus 2.x
-      slave_id= → pymodbus 3.12+
+      slave_id= → pymodbus 3.12 (beberapa build)
+      positional (address, count, slave_id) → pymodbus 3.12.1+
     """
     for kw in ('slave', 'unit', 'slave_id'):
         try:
@@ -37,7 +38,12 @@ def _read_regs(client, address: int, count: int, slave_id: int):
             )
         except TypeError:
             continue
-    # Last resort: tanpa kwarg slave (gunakan default client)
+    # Coba positional args (pymodbus 3.12.1 tidak terima keyword slave/unit)
+    try:
+        return client.read_holding_registers(address, count, slave_id)
+    except TypeError:
+        pass
+    # Last resort: tanpa slave ID (gunakan default client)
     return client.read_holding_registers(address=address, count=count)
 
 
