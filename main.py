@@ -209,9 +209,9 @@ def main():
         help='Gunakan sensor dummy untuk testing'
     )
     parser.add_argument(
-        '--fullscreen', '-f',
+        '--windowed', '-w',
         action='store_true',
-        help='Jalankan dalam mode fullscreen'
+        help='Jalankan dalam mode jendela (default: fullscreen)'
     )
     parser.add_argument(
         '--interval', '-i',
@@ -254,11 +254,11 @@ def main():
     if hasattr(worker.sensor_reader, 'gpio_available'):
         window.update_gpio_status(worker.sensor_reader.gpio_available)
 
-    # Tampilkan window
-    if args.fullscreen:
-        window.showFullScreen()
-    else:
+    # Tampilkan window (default fullscreen, --windowed untuk mode jendela)
+    if args.windowed:
         window.showMaximized()
+    else:
+        window.showFullScreen()
 
     # Mulai worker
     worker.start()
