@@ -1,7 +1,6 @@
 """
-SPARING Display GUI - v2
-Redesigned for 7" 1024x600 display
-Target: Raspberry Pi OS + USB TTL RS485
+SPARING Display GUI - v3
+Target: 7" 1024x600 display, Raspberry Pi OS
 """
 
 import sys
@@ -9,7 +8,7 @@ import platform
 import random
 import subprocess
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -22,11 +21,11 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath, QLinearGradient
 
 from config import config
-from models import SensorData
+from models import SensorData, OperationalStatus, OperationalState
 
 # ── RPi helpers ───────────────────────────────────────────────
 
-def _rfile(path, default="N/A"):
+def _rfile(path):
     try:
         with open(path) as f: return f.read().strip()
     except Exception: return None
@@ -65,7 +64,7 @@ def get_ip() -> str:
 
 # ── Theme ─────────────────────────────────────────────────────
 
-class T:  # Theme
+class T:
     BG      = "#0d1117"
     CARD    = "#161b22"
     PANEL   = "#1c2128"
@@ -91,14 +90,21 @@ class T:  # Theme
     FONT = "DejaVu Sans" if platform.system() == "Linux" else "Segoe UI"
     MONO = "DejaVu Sans Mono" if platform.system() == "Linux" else "Consolas"
 
-    # Sensor colors & limits
     SENSORS = {
-        "pH":    (GREEN,  "",        6.0,   9.0),
-        "TSS":   (YELLOW, "mg/L",    0,     200),
-        "DEBIT": (BLUE,   "m³/j",   0,     100),
-        "COD":   (RED,    "mg/L",    0,     300),
-        "NH3-N": (PURPLE, "mg/L",    0,     10),
+        "pH":    (GREEN,  "",      6.0,  9.0),
+        "TSS":   (YELLOW, "mg/L",  0,    200),
+        "DEBIT": (BLUE,   "m³/j",  0,    100),
+        "COD":   (RED,    "mg/L",  0,    300),
+        "NH3-N": (PURPLE, "mg/L",  0,    10),
     }
+
+    @staticmethod
+    def rgba(hex_color: str, alpha: int) -> str:
+        """Konversi #RRGGBB + alpha 0-255 ke rgba() yang valid di Qt stylesheet."""
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        return f"rgba({r},{g},{b},{alpha/255:.2f})"
 
 # ── Signals ───────────────────────────────────────────────────
 
@@ -108,6 +114,7 @@ class SignalBridge(QObject):
     notification      = pyqtSignal(str, int)
     data_count_update = pyqtSignal(int, int)
     daily_data_update = pyqtSignal(int)
+    status_update     = pyqtSignal(int)
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -129,18 +136,14 @@ class Spark(QWidget):
         mn, mx = min(self.pts), max(self.pts)
         rng = mx - mn if mx != mn else 1.0
         step = w / (len(self.pts) - 1)
-
-        pts = [QPoint(int(i * step),
-                      int(h - (v - mn) / rng * (h - 6) - 3))
+        pts = [QPoint(int(i * step), int(h - (v - mn) / rng * (h - 6) - 3))
                for i, v in enumerate(self.pts)]
-
         path = QPainterPath()
         path.moveTo(pts[0].x(), pts[0].y())
         for i in range(len(pts) - 1):
             cx = (pts[i].x() + pts[i+1].x()) // 2
             path.cubicTo(cx, pts[i].y(), cx, pts[i+1].y(),
                          pts[i+1].x(), pts[i+1].y())
-
         fill = QPainterPath(path)
         fill.lineTo(w, h); fill.lineTo(0, h); fill.closeSubpath()
         g = QLinearGradient(0, 0, 0, h)
@@ -158,7 +161,7 @@ class Badge(QLabel):
 
     def __init__(self, parent=None):
         super().__init__("NORMAL", parent)
-        self.setFixedSize(62, 18)
+        self.setFixedSize(80, 22)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.set("NORMAL")
 
@@ -167,33 +170,19 @@ class Badge(QLabel):
         c = self._COLORS.get(s, T.OFF)
         self.setText(s)
         self.setStyleSheet(
-            f"color:{c};font-weight:bold;font-size:9px;"
-            f"border:1px solid {c};border-radius:9px;"
-            f"background:{c}18;"
+            f"color:{c};font-weight:bold;font-size:10px;"
+            f"border:1px solid {c};border-radius:11px;"
+            f"background:{T.rgba(c, 30)};"
         )
 
 # ── Sensor Card ───────────────────────────────────────────────
 
 class SensorCard(QFrame):
-    """
-    Layout (top → bottom):
-      ┌─────────────────────────┐  ← colored top border 3px
-      │ [TITLE]        [BADGE]  │  22px
-      │ ─────────────────────── │  1px sep
-      │                         │  ← stretch
-      │      000.00             │  big value  ~52px
-      │       unit              │  16px
-      │                         │  ← stretch
-      │ Baku Mutu: x – y unit   │  14px
-      │ ░░░░░░ sparkline ░░░░░  │  44px
-      └─────────────────────────┘
-    """
     def __init__(self, name, color, unit, lo, hi, parent=None):
         super().__init__(parent)
         self.lo, self.hi = lo, hi
         self._color = color
 
-        # Outer style: colored top border, rounded corners
         self.setStyleSheet(f"""
             SensorCard {{
                 background: {T.CARD};
@@ -207,30 +196,26 @@ class SensorCard(QFrame):
         vb.setContentsMargins(12, 10, 12, 8)
         vb.setSpacing(0)
 
-        # ── row: title + badge ──
-        hdr = QHBoxLayout()
-        hdr.setSpacing(4)
+        # Baris: judul + badge
+        hdr = QHBoxLayout(); hdr.setSpacing(4)
         tl = QLabel(name)
         tl.setStyleSheet(
-            f"color:{T.FG2};font-size:10px;font-weight:bold;"
+            f"color:{T.FG2};font-size:11px;font-weight:bold;"
             f"font-family:'{T.FONT}';border:none;background:transparent;"
         )
         self.badge = Badge()
-        hdr.addWidget(tl)
-        hdr.addStretch()
-        hdr.addWidget(self.badge)
+        hdr.addWidget(tl); hdr.addStretch(); hdr.addWidget(self.badge)
         vb.addLayout(hdr)
 
-        # thin separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background:{T.BORDER2};border:none;margin-top:6px;margin-bottom:0px;")
+        sep.setStyleSheet(f"background:{T.BORDER2};border:none;margin-top:6px;")
         vb.addWidget(sep)
 
-        # ── center: value + unit (vertically centered) ──
         vb.addStretch(2)
 
+        # Nilai utama
         self.val = QLabel("–")
         self.val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.val.setStyleSheet(
@@ -249,36 +234,43 @@ class SensorCard(QFrame):
         )
         vb.addWidget(self.unit_lbl)
 
+        # Timestamp bacaan terakhir
+        self._ts_lbl = QLabel("–")
+        self._ts_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._ts_lbl.setStyleSheet(
+            f"color:{T.FG3};font-size:9px;border:none;background:transparent;"
+        )
+        vb.addWidget(self._ts_lbl)
+
         vb.addStretch(2)
 
-        # ── bottom info bar ──
-        info_row = QHBoxLayout()
-        info_row.setSpacing(0)
+        # Info baku mutu
+        info_row = QHBoxLayout(); info_row.setSpacing(0)
         lim = QLabel(f"Baku Mutu  {lo} – {hi} {unit}")
-        lim.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;background:transparent;")
-        info_row.addWidget(lim)
-        info_row.addStretch()
+        lim.setStyleSheet(f"color:{T.FG3};font-size:10px;border:none;background:transparent;")
+        info_row.addWidget(lim); info_row.addStretch()
         vb.addLayout(info_row)
-
         vb.addSpacing(4)
 
         self.spark = Spark(color)
         vb.addWidget(self.spark)
 
-    def update_value(self, v: float):
+    def update_value(self, v: float, ts: Optional[int] = None):
         self.val.setText(f"{v:.2f}")
         self.spark.push(v)
+        if ts:
+            self._ts_lbl.setText(datetime.fromtimestamp(ts).strftime("Pukul %H:%M:%S"))
         if self.lo <= v <= self.hi:
             self.badge.set("NORMAL")
-        elif v > self.hi * 1.5:
+        elif v > self.hi * 1.2:
             self.badge.set("ALARM")
         else:
             self.badge.set("WARNING")
 
-# ── Sidebar section ───────────────────────────────────────────
+# ── Sidebar Section ───────────────────────────────────────────
 
 class Section(QFrame):
-    def __init__(self, title, parent=None):
+    def __init__(self, title, color=None, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
@@ -291,9 +283,10 @@ class Section(QFrame):
         self._vb.setContentsMargins(9, 7, 9, 7)
         self._vb.setSpacing(3)
 
+        c = color or T.FG2
         th = QLabel(title.upper())
         th.setStyleSheet(
-            f"color:{T.OK};font-weight:bold;font-size:9px;"
+            f"color:{c};font-weight:bold;font-size:10px;"
             f"letter-spacing:1px;border:none;background:transparent;"
         )
         self._vb.addWidget(th)
@@ -360,8 +353,8 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._t_server(), "Server KLHK")
         tabs.addTab(self._t_wifi(),   "WiFi")
-        tabs.addTab(self._t_offset(),  "Offset Sensor")
-        tabs.addTab(self._t_params(),  "Parameter")
+        tabs.addTab(self._t_offset(), "Offset Sensor")
+        tabs.addTab(self._t_params(), "Parameter")
         root.addWidget(tabs)
 
         bl = QHBoxLayout(); bl.addStretch()
@@ -374,9 +367,9 @@ class SettingsDialog(QDialog):
         w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
         g = QGroupBox("Server 2 – KLHK")
         fm = QFormLayout(g); fm.setSpacing(8); fm.setContentsMargins(10,16,10,10)
-        self.e_uid  = QLineEdit(config.server.uid_2)
-        self.e_url  = QLineEdit(config.server.server_url_2)
-        self.e_sk   = QLineEdit(config.server.secret_key_url_2)
+        self.e_uid = QLineEdit(config.server.uid_2)
+        self.e_url = QLineEdit(config.server.server_url_2)
+        self.e_sk  = QLineEdit(config.server.secret_key_url_2)
         fm.addRow("UID KLHK:", self.e_uid)
         fm.addRow("Server URL:", self.e_url)
         fm.addRow("Secret Key URL:", self.e_sk)
@@ -396,7 +389,7 @@ class SettingsDialog(QDialog):
         self._btn_show.setFixedWidth(86)
         self._btn_show.clicked.connect(self._toggle)
         fm.addRow("SSID:", self.e_ssid)
-        fm.addRow("Password:", self.e_pass)
+        fm.addRow("Sandi:", self.e_pass)
         fm.addRow("", self._btn_show)
         vb.addWidget(g)
         bc = QPushButton("Hubungkan WiFi Sekarang")
@@ -420,15 +413,15 @@ class SettingsDialog(QDialog):
             s.setSingleStep(step); s.setValue(val); s.setSuffix(suffix)
             return s
 
-        self.s_ph  = spin(-14, 14, 0.01, config.offsets.ph_offset,  "  pH")
-        self.s_tss = spin(-999,999, 0.1, config.offsets.tss_offset, "  mg/L")
-        self.s_dbt = spin(-999,999, 0.1, config.offsets.debit_offset,"  m³/j")
+        self.s_ph  = spin(-14,  14,  0.01, config.offsets.ph_offset,   "  pH")
+        self.s_tss = spin(-999, 999, 0.1,  config.offsets.tss_offset,  "  mg/L")
+        self.s_dbt = spin(-999, 999, 0.1,  config.offsets.debit_offset, "  m³/j")
         fm.addRow("Offset pH:", self.s_ph)
         fm.addRow("Offset TSS:", self.s_tss)
         fm.addRow("Offset Debit:", self.s_dbt)
         vb.addWidget(g)
         br = QPushButton("Reset Semua ke 0")
-        br.clicked.connect(lambda: [s.setValue(0) for s in [self.s_ph,self.s_tss,self.s_dbt]])
+        br.clicked.connect(lambda: [s.setValue(0) for s in [self.s_ph, self.s_tss, self.s_dbt]])
         vb.addWidget(br)
         note = QLabel("pH: nilai+offset (maks 14) | TSS/Debit: nilai−offset")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
@@ -442,8 +435,6 @@ class SettingsDialog(QDialog):
         w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
         g = QGroupBox("Parameter yang Ditampilkan")
         gvb = QVBoxLayout(g); gvb.setSpacing(8); gvb.setContentsMargins(10, 16, 10, 10)
-
-        # Label + unit info per sensor
         INFO = {
             "pH":    "Derajat keasaman air (tanpa satuan)",
             "TSS":   "Total Suspended Solid (mg/L)",
@@ -456,36 +447,27 @@ class SettingsDialog(QDialog):
             row = QHBoxLayout(); row.setSpacing(8)
             cb = QCheckBox(name)
             cb.setChecked(name in config.display_sensors)
-            cb.setStyleSheet(
-                f"color:{T.FG1};font-size:11px;font-weight:bold;"
-            )
+            cb.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
             desc = QLabel(INFO.get(name, ""))
             desc.setStyleSheet(f"color:{T.FG3};font-size:9px;")
             row.addWidget(cb); row.addWidget(desc); row.addStretch()
             gvb.addLayout(row)
             self._param_checks[name] = cb
-
         vb.addWidget(g)
 
-        # Tipe sensor debit
         g2 = QGroupBox("Konfigurasi Sensor Debit")
         g2vb = QVBoxLayout(g2); g2vb.setSpacing(6); g2vb.setContentsMargins(10, 16, 10, 10)
         self._cb_closed = QCheckBox("Saluran Tertutup (Closed Channel)")
         self._cb_closed.setChecked(config.modbus.debit_closed_channel)
         self._cb_closed.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
-        desc_closed = QLabel(
-            "Centang: Float 32-bit, reg[1]<<16|reg[0]  •  Kosong: Double 64-bit, reg 15-18"
-        )
-        desc_closed.setStyleSheet(f"color:{T.FG3};font-size:9px;")
-        desc_closed.setWordWrap(True)
-        g2vb.addWidget(self._cb_closed)
-        g2vb.addWidget(desc_closed)
+        desc_closed = QLabel("Centang: Float 32-bit, reg[1]<<16|reg[0]  •  Kosong: Double 64-bit, reg 15-18")
+        desc_closed.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_closed.setWordWrap(True)
+        g2vb.addWidget(self._cb_closed); g2vb.addWidget(desc_closed)
         vb.addWidget(g2)
 
         note = QLabel("Minimal 1 parameter harus aktif. Perubahan langsung terlihat setelah Simpan.")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
-        vb.addWidget(note)
-        vb.addStretch(); return w
+        vb.addWidget(note); vb.addStretch(); return w
 
     def _toggle(self):
         if self.e_pass.echoMode() == QLineEdit.EchoMode.Password:
@@ -502,7 +484,7 @@ class SettingsDialog(QDialog):
             self._setwstatus("SSID kosong!", T.ERR); return
         self._setwstatus("Menghubungkan...", T.WARN)
         try:
-            cmd = ["nmcli","device","wifi","connect",ssid]
+            cmd = ["nmcli", "device", "wifi", "connect", ssid]
             if pw: cmd += ["password", pw]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if r.returncode == 0:
@@ -512,7 +494,7 @@ class SettingsDialog(QDialog):
         except FileNotFoundError:
             self._setwstatus("nmcli tidak ditemukan", T.ERR)
         except subprocess.TimeoutExpired:
-            self._setwstatus("Timeout", T.ERR)
+            self._setwstatus("Waktu habis", T.ERR)
         except Exception as e:
             self._setwstatus(str(e)[:70], T.ERR)
 
@@ -529,14 +511,11 @@ class SettingsDialog(QDialog):
         config.offsets.ph_offset       = self.s_ph.value()
         config.offsets.tss_offset      = self.s_tss.value()
         config.offsets.debit_offset    = self.s_dbt.value()
-        # Simpan parameter yang dipilih (minimal 1)
         selected = [n for n, cb in self._param_checks.items() if cb.isChecked()]
         if selected:
             config.display_sensors = selected
-        # Tipe sensor debit
         config.modbus.debit_closed_channel = self._cb_closed.isChecked()
         config.save()
-        # Refresh sidebar labels di MainWindow
         mw = self.parent()
         if hasattr(mw, 'refresh_sidebar'):
             mw.refresh_sidebar()
@@ -547,6 +526,22 @@ class SettingsDialog(QDialog):
 
 class MainWindow(QMainWindow):
 
+    # Metadata status operasional: label, warna teks, warna banner
+    _STATUS_META = {
+        OperationalStatus.NORMAL:      ("● NORMAL",                T.OK,   None),
+        OperationalStatus.STOPPED:     ("● -1  PRODUKSI BERHENTI", T.WARN, T.WARN),
+        OperationalStatus.CALIBRATION: ("● -2  KALIBRASI/AUDIT",   T.BLUE, T.BLUE),
+        OperationalStatus.MALFUNCTION: ("● -3  ALAT RUSAK",        T.ERR,  T.ERR),
+    }
+    _BANNER_TEXT = {
+        OperationalStatus.STOPPED:
+            "⚠  PRODUKSI BERHENTI — RTU mengirim nilai  -1  ke server",
+        OperationalStatus.CALIBRATION:
+            "ℹ  KALIBRASI / AUDIT AKTIF — RTU mengirim nilai  -2  ke server",
+        OperationalStatus.MALFUNCTION:
+            "✗  ALAT RUSAK / TIDAK OPTIMAL — RTU mengirim nilai  -3  ke server",
+    }
+
     def __init__(self):
         super().__init__()
         self.signal_bridge = SignalBridge()
@@ -554,14 +549,20 @@ class MainWindow(QMainWindow):
         self.resize(1024, 600)
         self.setStyleSheet(f"QMainWindow{{background:{T.BG};}}")
 
+        # Pelacakan kepatuhan (compliance)
+        self._total_readings  = 0
+        self._ok_readings     = 0
+        self._real            = False
+        self._t0              = datetime.now()
+        self._tick_n          = 0
+
+        # Hubungkan sinyal
         self.signal_bridge.sensor_update.connect(self._on_sensor)
         self.signal_bridge.connection_update.connect(self._on_conn)
+        self.signal_bridge.notification.connect(self._show_notification)
         self.signal_bridge.data_count_update.connect(self._on_count)
         self.signal_bridge.daily_data_update.connect(self._on_daily)
-
-        self._real = False
-        self._t0   = datetime.now()
-        self._tick_n = 0
+        self.signal_bridge.status_update.connect(self._on_status_update)
 
         cw = QWidget()
         cw.setStyleSheet(f"background:{T.BG};")
@@ -571,6 +572,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         self._mk_header(root)
+        self._mk_status_banner(root)
 
         body = QWidget()
         body.setStyleSheet(f"background:{T.BG};")
@@ -581,6 +583,7 @@ class MainWindow(QMainWindow):
         self._mk_sidebar(bl)
         root.addWidget(body, 1)
 
+        self._mk_notif_bar(root)
         self._mk_footer(root)
 
         self._sim_t = QTimer()
@@ -591,7 +594,7 @@ class MainWindow(QMainWindow):
 
     def _mk_header(self, root):
         hdr = QFrame()
-        hdr.setFixedHeight(42)
+        hdr.setFixedHeight(44)
         hdr.setStyleSheet(
             f"QFrame{{background:{T.PANEL};border-bottom:1px solid {T.BORDER};}}"
         )
@@ -599,22 +602,16 @@ class MainWindow(QMainWindow):
         hl.setContentsMargins(14, 0, 14, 0)
         hl.setSpacing(8)
 
-        # Logo
         logo = QLabel("⬡ MITRA MUTIARA")
-        logo.setStyleSheet(
-            f"color:{T.FG1};font-size:13px;font-weight:800;border:none;"
-        )
+        logo.setStyleSheet(f"color:{T.FG1};font-size:13px;font-weight:800;border:none;")
         hl.addWidget(logo)
 
         self._h_status = QLabel("● ONLINE")
-        self._h_status.setStyleSheet(
-            f"color:{T.OK};font-size:9px;font-weight:bold;border:none;"
-        )
+        self._h_status.setStyleSheet(f"color:{T.OK};font-size:10px;font-weight:bold;border:none;")
         hl.addWidget(self._h_status)
 
         hl.addStretch()
 
-        # Clock
         self._h_time = QLabel("--:--:--")
         self._h_time.setStyleSheet(
             f"color:{T.FG1};font-size:20px;font-weight:bold;"
@@ -623,41 +620,43 @@ class MainWindow(QMainWindow):
         hl.addWidget(self._h_time)
 
         self._h_date = QLabel(datetime.now().strftime("%d %b %Y"))
-        self._h_date.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
+        self._h_date.setStyleSheet(f"color:{T.FG3};font-size:10px;border:none;")
         hl.addWidget(self._h_date)
 
         hl.addStretch()
 
-        # Action + system info chips
-        def chip(text, color=T.FG3, bc=T.BORDER):
+        # Tombol aksi (layak sentuh: padding lebih besar)
+        def btn_chip(text, color=T.FG3, bc=T.BORDER):
             lb = QLabel(text)
             lb.setStyleSheet(
-                f"color:{color};border:1px solid {bc};border-radius:3px;"
-                f"padding:2px 8px;font-size:9px;font-weight:bold;"
+                f"color:{color};border:1px solid {bc};border-radius:4px;"
+                f"padding:4px 12px;font-size:10px;font-weight:bold;"
             )
             lb.setCursor(Qt.CursorShape.PointingHandCursor)
             return lb
 
-        def _on_fullscreen(_):
-            if self.isFullScreen(): self.showNormal()
-            else: self.showFullScreen()
+        self._fs_chip = btn_chip("⛶  MODE JENDELA")
+        self._fs_chip.mousePressEvent = self._toggle_fullscreen
+        hl.addWidget(self._fs_chip)
 
-        def _on_settings(_):
-            SettingsDialog(self).exec()
-
-        fs = chip("⛶ FULLSCREEN")
-        fs.mousePressEvent = _on_fullscreen
-        hl.addWidget(fs)
-
-        st = chip("⚙ SETTINGS", T.WARN, T.WARN)
-        st.mousePressEvent = _on_settings
+        st = btn_chip("⚙  PENGATURAN", T.WARN, T.WARN)
+        st.mousePressEvent = lambda _: SettingsDialog(self).exec()
         hl.addWidget(st)
 
         hl.addSpacing(4)
 
-        self._chip_ip  = chip(f"🌐 {get_ip()}")
-        self._chip_cpu = chip("🌡 CPU: –")
-        self._chip_ram = chip("💾 RAM: –")
+        # Chip info sistem (informatif, tidak interaktif)
+        def info_chip(text):
+            lb = QLabel(text)
+            lb.setStyleSheet(
+                f"color:{T.FG3};border:1px solid {T.BORDER};border-radius:3px;"
+                f"padding:2px 8px;font-size:9px;"
+            )
+            return lb
+
+        self._chip_ip  = info_chip(f"IP {get_ip()}")
+        self._chip_cpu = info_chip("CPU –")
+        self._chip_ram = info_chip("RAM –")
         for c in (self._chip_ip, self._chip_cpu, self._chip_ram):
             hl.addWidget(c)
 
@@ -667,101 +666,164 @@ class MainWindow(QMainWindow):
         self._clk.timeout.connect(self._tick)
         self._clk.start(1000)
 
+    def _toggle_fullscreen(self, _=None):
+        if self.isFullScreen():
+            self.showNormal()
+            self._fs_chip.setText("⛶  MODE LAYAR PENUH")
+        else:
+            self.showFullScreen()
+            self._fs_chip.setText("⛶  MODE JENDELA")
+
     def _tick(self):
         self._h_time.setText(datetime.now().strftime("%H:%M:%S"))
         self._tick_n += 1
         if self._tick_n % 5 == 0:
             temp = get_cpu_temp()
             try:
-                tv = float(temp.replace("°C",""))
+                tv  = float(temp.replace("°C", ""))
                 col = T.ERR if tv > 70 else (T.WARN if tv > 55 else T.FG3)
-                bc  = col
             except ValueError:
-                col, bc = T.FG3, T.BORDER
-            self._chip_cpu.setText(f"🌡 {temp}")
+                col = T.FG3
+            self._chip_cpu.setText(f"CPU {temp}")
             self._chip_cpu.setStyleSheet(
-                f"color:{col};border:1px solid {bc};border-radius:3px;"
-                f"padding:2px 8px;font-size:9px;font-weight:bold;"
+                f"color:{col};border:1px solid {col};border-radius:3px;"
+                f"padding:2px 8px;font-size:9px;"
             )
-            self._chip_ram.setText(f"💾 {get_mem()}")
+            self._chip_ram.setText(f"RAM {get_mem()}")
             self._v_rpi.setText(get_rpi_voltage())
+
+    # ─────────────────────────────────────── Status Banner ──
+
+    def _mk_status_banner(self, root):
+        """Strip berwarna di bawah header — tampil saat status tidak NORMAL."""
+        self._banner = QFrame()
+        self._banner.setFixedHeight(26)
+        self._banner.setVisible(False)
+        self._banner_lbl = QLabel()
+        self._banner_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bl = QHBoxLayout(self._banner)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(self._banner_lbl)
+        root.addWidget(self._banner)
+
+    # ─────────────────────────────────────── Notification Bar ──
+
+    def _mk_notif_bar(self, root):
+        """Bar notifikasi di atas footer — tampil sementara saat ada pesan."""
+        self._notif_bar = QFrame()
+        self._notif_bar.setFixedHeight(26)
+        self._notif_bar.setVisible(False)
+        self._notif_lbl = QLabel()
+        self._notif_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nl = QHBoxLayout(self._notif_bar)
+        nl.setContentsMargins(0, 0, 0, 0)
+        nl.addWidget(self._notif_lbl)
+        root.addWidget(self._notif_bar)
+
+        self._notif_timer = QTimer()
+        self._notif_timer.setSingleShot(True)
+        self._notif_timer.timeout.connect(lambda: self._notif_bar.setVisible(False))
+
+    def _show_notification(self, msg: str, duration: int):
+        msg_lo = msg.lower()
+        if any(w in msg_lo for w in ("berhasil", "terhubung", "diambil")):
+            color = T.OK
+        elif any(w in msg_lo for w in ("gagal", "rusak", "error")):
+            color = T.ERR
+        else:
+            color = T.BLUE
+        self._notif_bar.setStyleSheet(
+            f"background:{T.rgba(color, 35)};"
+            f"border-top:1px solid {color};"
+        )
+        self._notif_lbl.setText(f"● {msg}")
+        self._notif_lbl.setStyleSheet(
+            f"color:{color};font-weight:bold;font-size:10px;border:none;"
+        )
+        self._notif_bar.setVisible(True)
+        self._notif_timer.start(duration)
 
     # ─────────────────────────────────────── Cards ──
 
     def _mk_cards(self, parent):
-        cw = QWidget()
-        cw.setStyleSheet("background:transparent;")
+        cw = QWidget(); cw.setStyleSheet("background:transparent;")
         hl = QHBoxLayout(cw)
-        hl.setSpacing(6)
-        hl.setContentsMargins(0, 0, 0, 0)
-
+        hl.setSpacing(6); hl.setContentsMargins(0, 0, 0, 0)
         self.cards = {}
         for name, (color, unit, lo, hi) in T.SENSORS.items():
             card = SensorCard(name, color, unit, lo, hi)
             card.setVisible(name in config.display_sensors)
             hl.addWidget(card)
             self.cards[name] = card
-
-        parent.addWidget(cw, 3)   # 75% width
+        parent.addWidget(cw, 3)
 
     # ─────────────────────────────────────── Sidebar ──
 
     def _mk_sidebar(self, parent):
-        sc = QWidget()
-        sc.setStyleSheet("background:transparent;")
+        sc = QWidget(); sc.setStyleSheet("background:transparent;")
         vb = QVBoxLayout(sc)
         vb.setContentsMargins(0, 0, 0, 0)
         vb.setSpacing(5)
 
-        # Modbus RS485
-        s_mb = Section("Modbus RS485 (USB)")
-        self._mb_port = s_mb.row("Port", config.modbus.port)
-        self._mb_last = s_mb.row("Last Read", "–:–:–")
-        self._mb_stat = s_mb.row("Status", "Waiting…", T.WARN)
+        # ── 1. STATUS OPERASIONAL (paling atas — regulasi kritis) ──
+        s_op = Section("Status Operasional", color=T.WARN)
+        self._op_status_lbl = s_op.row("Status Saat Ini", "● NORMAL", T.OK)
 
-        # LED indicators
-        led_row = QHBoxLayout(); led_row.setSpacing(3)
-        self._leds = {}
-        for num, name in [("01","PH"),("02","TSS"),("03","FLW"),("04","COD"),("05","NH3")]:
-            lb = QLabel(f"{num}\n{name}")
-            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lb.setFixedWidth(36)
-            lb.setStyleSheet(
-                f"background:{T.OFF}20;color:{T.OFF};"
-                f"border:1px solid {T.OFF};border-radius:3px;"
-                f"font-size:9px;padding:2px;"
-            )
-            led_row.addWidget(lb)
-            self._leds[name] = lb
-        s_mb._vb.addLayout(led_row)
-        vb.addWidget(s_mb)
+        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
 
-        # Sistem RPi
-        s_el = Section("Sistem RPi")
-        self._v_rpi = s_el.row("Tegangan Core", get_rpi_voltage(), T.CYAN)
-        vb.addWidget(s_el)
+        def _op_btn(label, color):
+            b = QPushButton(label)
+            b.setFixedHeight(44)          # touch target 44px
+            b.setStyleSheet(self._op_btn_style(color, active=False))
+            return b
 
-        # Server 1
-        s_mm = Section("Server Mitra Mutiara")
-        self._mm_conn = s_mm.row("Koneksi", "Checking…", T.FG2)
-        vb.addWidget(s_mm)
+        self._btn_m1 = _op_btn("-1\nBERHENTI",  T.WARN)
+        self._btn_m2 = _op_btn("-2\nKALIBRASI", T.BLUE)
+        self._btn_m3 = _op_btn("-3\nRUSAK",      T.ERR)
 
-        # Server 2
-        s_kl = Section("Server KLHK")
-        self._kl_conn = s_kl.row("Koneksi", "Checking…", T.FG2)
-        self._kl_uid  = s_kl.row("UID", config.server.uid_2)
-        vb.addWidget(s_kl)
+        self._btn_m1.clicked.connect(lambda: self._set_status(OperationalStatus.STOPPED))
+        self._btn_m2.clicked.connect(lambda: self._set_status(OperationalStatus.CALIBRATION))
+        self._btn_m3.clicked.connect(lambda: self._set_status(OperationalStatus.MALFUNCTION))
 
-        # Offset Kalibrasi
-        s_off = Section("Offset Kalibrasi")
-        self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_offset:+.2f}")
-        self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_offset:+.2f} mg/L")
-        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m³/j")
-        vb.addWidget(s_off)
+        btn_row.addWidget(self._btn_m1)
+        btn_row.addWidget(self._btn_m2)
+        btn_row.addWidget(self._btn_m3)
+        s_op._vb.addLayout(btn_row)
 
-        # Buffer
-        s_buf = Section("Data Buffer")
-        self._buf_lbl = s_buf.row("Tersimpan", "0 records")
+        self._btn_reset_op = QPushButton("✓  Kembali ke NORMAL")
+        self._btn_reset_op.setFixedHeight(34)
+        self._btn_reset_op.setStyleSheet(
+            f"QPushButton{{background:{T.rgba(T.OK,40)};color:{T.OK};"
+            f"border:1px solid {T.OK};border-radius:4px;"
+            f"font-size:10px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{T.rgba(T.OK,80)};}}"
+        )
+        self._btn_reset_op.setVisible(False)
+        self._btn_reset_op.clicked.connect(lambda: self._set_status(OperationalStatus.NORMAL))
+        s_op.add(self._btn_reset_op)
+        vb.addWidget(s_op)
+
+        # ── 2. ALARM ──
+        self._alarm_frame = QFrame()
+        self._alarm_frame.setStyleSheet(
+            f"background:{T.rgba(T.OK, 24)};border:1px solid {T.OK};border-radius:5px;"
+        )
+        af = QVBoxLayout(self._alarm_frame)
+        af.setContentsMargins(8, 6, 8, 6); af.setSpacing(3)
+        self._alarm_title = QLabel("✓  Tidak ada alarm")
+        self._alarm_title.setStyleSheet(
+            f"color:{T.OK};font-weight:bold;font-size:10px;border:none;"
+        )
+        self._alarm_desc = QLabel("Semua parameter dalam batas normal.")
+        self._alarm_desc.setWordWrap(True)
+        self._alarm_desc.setStyleSheet(f"color:{T.FG2};font-size:10px;border:none;")
+        af.addWidget(self._alarm_title)
+        af.addWidget(self._alarm_desc)
+        vb.addWidget(self._alarm_frame)
+
+        # ── 3. DATA BUFFER ──
+        s_buf = Section("Data Buffer", color=T.BLUE)
+        self._buf_lbl = s_buf.row("Tersimpan", "0 data")
         bar = QProgressBar()
         bar.setFixedHeight(5); bar.setValue(0)
         bar.setStyleSheet(
@@ -772,21 +834,50 @@ class MainWindow(QMainWindow):
         s_buf.add(bar)
         vb.addWidget(s_buf)
 
-        # Alarm
-        self._alarm_frame = QFrame()
-        self._alarm_frame.setStyleSheet(
-            f"background:{T.ERR}18;border:1px solid {T.ERR};border-radius:5px;"
-        )
-        af = QVBoxLayout(self._alarm_frame)
-        af.setContentsMargins(8, 6, 8, 6); af.setSpacing(3)
-        self._alarm_title = QLabel("● Tidak ada alarm")
-        self._alarm_title.setStyleSheet(f"color:{T.OK};font-weight:bold;font-size:10px;border:none;")
-        self._alarm_desc = QLabel("Semua parameter normal.")
-        self._alarm_desc.setWordWrap(True)
-        self._alarm_desc.setStyleSheet(f"color:{T.FG2};font-size:9px;border:none;")
-        af.addWidget(self._alarm_title)
-        af.addWidget(self._alarm_desc)
-        vb.addWidget(self._alarm_frame)
+        # ── 4. SERVER KLHK ──
+        s_kl = Section("Server KLHK", color=T.BLUE)
+        self._kl_conn = s_kl.row("Koneksi", "Memeriksa...", T.FG2)
+        self._kl_uid  = s_kl.row("UID", config.server.uid_2)
+        vb.addWidget(s_kl)
+
+        # ── 5. SERVER MITRA MUTIARA ──
+        s_mm = Section("Server Mitra Mutiara", color=T.BLUE)
+        self._mm_conn = s_mm.row("Koneksi", "Memeriksa...", T.FG2)
+        vb.addWidget(s_mm)
+
+        # ── 6. MODBUS RS485 ──
+        s_mb = Section("Modbus RS485 (USB)")
+        self._mb_port = s_mb.row("Port", config.modbus.port)
+        self._mb_last = s_mb.row("Terakhir Dibaca", "–:–:–")
+        self._mb_stat = s_mb.row("Status", "Menunggu...", T.WARN)
+
+        led_row = QHBoxLayout(); led_row.setSpacing(3)
+        self._leds = {}
+        for num, name in [("01","PH"),("02","TSS"),("03","FLW"),("04","COD"),("05","NH3")]:
+            lb = QLabel(f"{num}\n{name}")
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setFixedWidth(36)
+            lb.setStyleSheet(
+                f"background:{T.rgba(T.OFF,32)};color:{T.OFF};"
+                f"border:1px solid {T.OFF};border-radius:3px;"
+                f"font-size:9px;padding:2px;"
+            )
+            led_row.addWidget(lb)
+            self._leds[name] = lb
+        s_mb._vb.addLayout(led_row)
+        vb.addWidget(s_mb)
+
+        # ── 7. OFFSET KALIBRASI ──
+        s_off = Section("Offset Kalibrasi")
+        self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_offset:+.2f}")
+        self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_offset:+.2f} mg/L")
+        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m³/j")
+        vb.addWidget(s_off)
+
+        # ── 8. SISTEM RPi ──
+        s_el = Section("Sistem RPi", color=T.FG3)
+        self._v_rpi = s_el.row("Tegangan Core", get_rpi_voltage(), T.CYAN)
+        vb.addWidget(s_el)
 
         vb.addStretch()
 
@@ -800,7 +891,23 @@ class MainWindow(QMainWindow):
             QScrollBar::handle:vertical{background:#333;min-height:20px;border-radius:2px;}
             QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}
         """)
-        parent.addWidget(sa, 1)  # 25% width
+        parent.addWidget(sa, 1)
+
+    @staticmethod
+    def _op_btn_style(color: str, active: bool) -> str:
+        if active:
+            return (
+                f"QPushButton{{background:{color};color:white;"
+                f"border:2px solid {color};border-radius:4px;"
+                f"font-size:10px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:{color};}}"
+            )
+        return (
+            f"QPushButton{{background:{T.rgba(color, 35)};color:{color};"
+            f"border:1px solid {color};border-radius:4px;"
+            f"font-size:10px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{T.rgba(color, 70)};}}"
+        )
 
     # ─────────────────────────────────────── Footer ──
 
@@ -814,24 +921,19 @@ class MainWindow(QMainWindow):
         hl.setContentsMargins(14, 0, 14, 0)
         hl.setSpacing(0)
 
-        # Left: port / baud info
         left = QWidget(); left.setStyleSheet("background:transparent;")
         ll = QVBoxLayout(left)
         ll.setSpacing(2); ll.setContentsMargins(0, 0, 0, 0)
         ll.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         port_lbl = QLabel(f"USB  {config.modbus.port}")
-        port_lbl.setStyleSheet(
-            f"color:{T.FG2};font-size:11px;font-weight:bold;border:none;"
-        )
-        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  SPARING v2.0")
+        port_lbl.setStyleSheet(f"color:{T.FG2};font-size:11px;font-weight:bold;border:none;")
+        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  SPARING v3.0")
         baud_lbl.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
-        ll.addWidget(port_lbl)
-        ll.addWidget(baud_lbl)
+        ll.addWidget(port_lbl); ll.addWidget(baud_lbl)
         hl.addWidget(left)
 
         hl.addStretch()
 
-        # Center: 4 stat blocks (label + value, 2 rows)
         def stat(label, init_val, color=T.FG1):
             w = QWidget(); w.setStyleSheet("background:transparent;")
             vb = QVBoxLayout(w)
@@ -839,9 +941,7 @@ class MainWindow(QMainWindow):
             vb.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lb = QLabel(label.upper())
             lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lb.setStyleSheet(
-                f"color:{T.FG3};font-size:8px;letter-spacing:0.5px;border:none;"
-            )
+            lb.setStyleSheet(f"color:{T.FG3};font-size:8px;letter-spacing:0.5px;border:none;")
             lv = QLabel(init_val)
             lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lv.setStyleSheet(
@@ -852,7 +952,6 @@ class MainWindow(QMainWindow):
             return w, lv
 
         def vsep():
-            """Thin vertical divider between stat blocks."""
             c = QWidget(); c.setStyleSheet("background:transparent;")
             ch = QHBoxLayout(c); ch.setContentsMargins(0, 8, 0, 8)
             line = QFrame(); line.setFrameShape(QFrame.Shape.VLine)
@@ -861,19 +960,17 @@ class MainWindow(QMainWindow):
             ch.addWidget(line)
             return c
 
-        u_blk, self._f_uptime = stat("Uptime",    "0h 0m",  T.OK)
-        s_blk, self._f_sent   = stat("Terkirim",  "0 data", T.BLUE)
-        a_blk, self._f_alarms = stat("Alarm",     "0",      T.FG1)
-        k_blk, _              = stat("Kepatuhan", "94.2%",  T.OK)
+        u_blk, self._f_uptime     = stat("Uptime",    "0j 0m",  T.OK)
+        s_blk, self._f_sent       = stat("Terkirim",  "0 data", T.BLUE)
+        a_blk, self._f_alarms     = stat("Alarm",     "0",      T.FG1)
+        k_blk, self._f_compliance = stat("Kepatuhan", "—",      T.FG2)
 
         for i, w in enumerate([u_blk, s_blk, a_blk, k_blk]):
-            if i > 0:
-                hl.addWidget(vsep())
+            if i > 0: hl.addWidget(vsep())
             hl.addWidget(w)
 
         hl.addStretch()
 
-        # Right: online / offline pill
         right = QWidget(); right.setStyleSheet("background:transparent;")
         rl = QVBoxLayout(right)
         rl.setSpacing(2); rl.setContentsMargins(0, 0, 0, 0)
@@ -886,8 +983,7 @@ class MainWindow(QMainWindow):
         brand = QLabel("© Mitra Mutiara")
         brand.setAlignment(Qt.AlignmentFlag.AlignRight)
         brand.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
-        rl.addWidget(self._ft_conn)
-        rl.addWidget(brand)
+        rl.addWidget(self._ft_conn); rl.addWidget(brand)
         hl.addWidget(right)
 
         root.addWidget(ft)
@@ -899,9 +995,7 @@ class MainWindow(QMainWindow):
     def _uptime(self):
         d = datetime.now() - self._t0
         h, m = d.seconds // 3600, (d.seconds % 3600) // 60
-        self._f_uptime.setText(
-            f"{d.days}d {h}h {m}m" if d.days else f"{h}h {m}m"
-        )
+        self._f_uptime.setText(f"{d.days}h {h}j {m}m" if d.days else f"{h}j {m}m")
 
     # ─────────────────────────────────────── Slots ──
 
@@ -915,52 +1009,68 @@ class MainWindow(QMainWindow):
 
     def _on_sensor(self, data: SensorData):
         self._real = True
-        self.cards["pH"].update_value(data.ph)
-        self.cards["TSS"].update_value(data.tss)
-        self.cards["DEBIT"].update_value(data.debit)
-        self.cards["COD"].update_value(data.cod)
-        self.cards["NH3-N"].update_value(data.nh3n)
+        ts = data.timestamp
+        self.cards["pH"].update_value(data.ph, ts)
+        self.cards["TSS"].update_value(data.tss, ts)
+        self.cards["DEBIT"].update_value(data.debit, ts)
+        self.cards["COD"].update_value(data.cod, ts)
+        self.cards["NH3-N"].update_value(data.nh3n, ts)
 
-        # Modbus LEDs → green
         for lb in self._leds.values():
             lb.setStyleSheet(
-                f"background:{T.OK}20;color:{T.OK};"
+                f"background:{T.rgba(T.OK,32)};color:{T.OK};"
                 f"border:1px solid {T.OK};border-radius:3px;"
                 f"font-size:9px;padding:2px;"
             )
-        ts = datetime.fromtimestamp(data.timestamp).strftime("%H:%M:%S")
-        self._mb_last.setText(ts)
-        self._mb_stat.setText("Running")
+        ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+        self._mb_last.setText(ts_str)
+        self._mb_stat.setText("Berjalan")
         self._mb_stat.setStyleSheet(f"color:{T.OK};font-size:10px;font-weight:bold;border:none;")
 
         self._check_alarms(data)
 
     def _on_conn(self, ok: bool):
-        txt = "Connected" if ok else "Disconnected"
+        txt = "Terhubung" if ok else "Terputus"
         col = T.OK if ok else T.OFF
         for lb in (self._mm_conn, self._kl_conn):
             lb.setText(txt)
             lb.setStyleSheet(f"color:{col};font-size:10px;font-weight:bold;border:none;")
-        # Footer pill
         self._ft_conn.setText("● ONLINE" if ok else "○ OFFLINE")
         self._ft_conn.setStyleSheet(
             f"color:{T.OK if ok else T.OFF};font-size:10px;font-weight:bold;border:none;"
         )
+        self._h_status.setText("● ONLINE" if ok else "○ OFFLINE")
+        self._h_status.setStyleSheet(
+            f"color:{T.OK if ok else T.OFF};font-size:10px;font-weight:bold;border:none;"
+        )
 
     def _on_count(self, cur, mx):
-        self._buf_lbl.setText(f"{cur} records")
-        self._buf_bar.setValue(int(cur/mx*100) if mx else 0)
+        self._buf_lbl.setText(f"{cur} data")
+        self._buf_bar.setValue(int(cur / mx * 100) if mx else 0)
 
     def _on_daily(self, n):
         self._f_sent.setText(f"{n} data")
 
     def _check_alarms(self, d: SensorData):
         msgs = []
-        if not (6 <= d.ph <= 9):  msgs.append(f"pH {d.ph:.2f} di luar batas (6–9)")
-        if d.tss > 200:           msgs.append(f"TSS {d.tss:.1f} mg/L > 200")
-        if d.cod > 300:           msgs.append(f"COD {d.cod:.1f} mg/L > 300")
-        if d.nh3n > 10:           msgs.append(f"NH3-N {d.nh3n:.1f} mg/L > 10")
+        if not (6 <= d.ph <= 9):   msgs.append(f"pH {d.ph:.2f} di luar batas (6–9)")
+        if d.tss  > 200:           msgs.append(f"TSS {d.tss:.1f} mg/L > 200")
+        if d.cod  > 300:           msgs.append(f"COD {d.cod:.1f} mg/L > 300")
+        if d.nh3n > 10:            msgs.append(f"NH3-N {d.nh3n:.1f} mg/L > 10")
         n = len(msgs)
+
+        # Hitung kepatuhan sesi ini
+        self._total_readings += 1
+        if n == 0:
+            self._ok_readings += 1
+        pct = self._ok_readings / self._total_readings * 100
+        pct_col = T.OK if pct >= 90 else (T.WARN if pct >= 70 else T.ERR)
+        self._f_compliance.setText(f"{pct:.1f}%")
+        self._f_compliance.setStyleSheet(
+            f"color:{pct_col};font-weight:bold;font-size:15px;"
+            f"font-family:'{T.MONO}';border:none;"
+        )
+
         self._f_alarms.setText(str(n))
         if n:
             self._f_alarms.setStyleSheet(
@@ -968,9 +1078,12 @@ class MainWindow(QMainWindow):
                 f"font-family:'{T.MONO}';border:none;"
             )
             self._alarm_frame.setStyleSheet(
-                f"background:{T.ERR}18;border:1px solid {T.ERR};border-radius:5px;")
-            self._alarm_title.setText(f"⚠ ALARM: {n} parameter")
-            self._alarm_title.setStyleSheet(f"color:{T.ERR};font-weight:bold;font-size:10px;border:none;")
+                f"background:{T.rgba(T.ERR,24)};border:1px solid {T.ERR};border-radius:5px;"
+            )
+            self._alarm_title.setText(f"⚠  ALARM: {n} parameter")
+            self._alarm_title.setStyleSheet(
+                f"color:{T.ERR};font-weight:bold;font-size:10px;border:none;"
+            )
             self._alarm_desc.setText("\n".join(msgs))
         else:
             self._f_alarms.setStyleSheet(
@@ -978,13 +1091,73 @@ class MainWindow(QMainWindow):
                 f"font-family:'{T.MONO}';border:none;"
             )
             self._alarm_frame.setStyleSheet(
-                f"background:{T.OK}18;border:1px solid {T.OK};border-radius:5px;")
-            self._alarm_title.setText("✓ Tidak ada alarm")
-            self._alarm_title.setStyleSheet(f"color:{T.OK};font-weight:bold;font-size:10px;border:none;")
+                f"background:{T.rgba(T.OK,24)};border:1px solid {T.OK};border-radius:5px;"
+            )
+            self._alarm_title.setText("✓  Tidak ada alarm")
+            self._alarm_title.setStyleSheet(
+                f"color:{T.OK};font-weight:bold;font-size:10px;border:none;"
+            )
             self._alarm_desc.setText("Semua parameter dalam batas normal.")
 
+    # ─────────────────────────────────────── Status Operasional ──
+
+    def _set_status(self, status: OperationalStatus):
+        # Dialog konfirmasi untuk aksi berbahaya
+        if status != OperationalStatus.NORMAL:
+            label, color, _ = self._STATUS_META[status]
+            reply = QMessageBox.warning(
+                self,
+                "Konfirmasi Status Operasional",
+                f"Ubah status ke:\n\n  {label}\n\n"
+                f"Semua data yang dikirim ke server akan menggunakan\n"
+                f"kode kondisi  {int(status)}  sampai status direset.\n\n"
+                f"Lanjutkan?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        OperationalState.set(status)
+        label, color, banner_color = self._STATUS_META[status]
+
+        self._op_status_lbl.setText(label)
+        self._op_status_lbl.setStyleSheet(
+            f"color:{color};font-size:10px;font-weight:bold;border:none;"
+        )
+        self._btn_reset_op.setVisible(status != OperationalStatus.NORMAL)
+        self._update_status_buttons(status)
+
+        if status == OperationalStatus.NORMAL:
+            self._banner.setVisible(False)
+        else:
+            self._banner.setVisible(True)
+            self._banner.setStyleSheet(
+                f"background:{T.rgba(banner_color, 40)};"
+                f"border-bottom:1px solid {banner_color};"
+            )
+            self._banner_lbl.setText(self._BANNER_TEXT[status])
+            self._banner_lbl.setStyleSheet(
+                f"color:{banner_color};font-weight:bold;font-size:11px;border:none;"
+            )
+
+        print(f"[STATUS] Operasional: {label}")
+
+    def _update_status_buttons(self, status: OperationalStatus):
+        mapping = [
+            (self._btn_m1, OperationalStatus.STOPPED,     T.WARN),
+            (self._btn_m2, OperationalStatus.CALIBRATION, T.BLUE),
+            (self._btn_m3, OperationalStatus.MALFUNCTION, T.ERR),
+        ]
+        for btn, op_status, color in mapping:
+            btn.setStyleSheet(self._op_btn_style(color, active=(status == op_status)))
+
+    def _on_status_update(self, value: int):
+        self._set_status(OperationalStatus(value))
+
+    # ─────────────────────────────────────── Refresh ──
+
     def refresh_sidebar(self):
-        """Update sidebar setelah config berubah melalui SettingsDialog."""
         self._kl_uid.setText(config.server.uid_2)
         self._off_ph.setText(f"{config.offsets.ph_offset:+.2f}")
         self._off_tss.setText(f"{config.offsets.tss_offset:+.2f} mg/L")
@@ -992,9 +1165,11 @@ class MainWindow(QMainWindow):
         self.refresh_cards()
 
     def refresh_cards(self):
-        """Tampilkan/sembunyikan sensor card sesuai config.display_sensors."""
         for name, card in self.cards.items():
             card.setVisible(name in config.display_sensors)
+
+    def update_gpio_status(self, gpio_ok: bool):
+        pass
 
 # ── Factory ───────────────────────────────────────────────────
 

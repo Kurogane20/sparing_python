@@ -6,7 +6,36 @@ Model data untuk sensor dan pengiriman
 from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import datetime
+from enum import IntEnum
+import threading
 import json
+
+
+class OperationalStatus(IntEnum):
+    NORMAL      =  0
+    STOPPED     = -1  # Produksi berhenti sementara  → kirim -1
+    CALIBRATION = -2  # Kalibrasi / audit             → kirim -2
+    MALFUNCTION = -3  # Alat rusak / tidak optimal    → kirim -3
+
+
+class OperationalState:
+    """Thread-safe singleton status operasional RTU (Pasal 6.2.6.6g)."""
+    _status = OperationalStatus.NORMAL
+    _lock = threading.Lock()
+
+    @classmethod
+    def get(cls) -> OperationalStatus:
+        with cls._lock:
+            return cls._status
+
+    @classmethod
+    def set(cls, status: OperationalStatus) -> None:
+        with cls._lock:
+            cls._status = status
+
+    @classmethod
+    def is_normal(cls) -> bool:
+        return cls.get() == OperationalStatus.NORMAL
 
 @dataclass
 class SensorData:
@@ -21,18 +50,40 @@ class SensorData:
     timestamp: int = 0  # Unix timestamp
     
     def to_dict(self) -> dict:
-        """Konversi ke dictionary untuk JSON"""
+        """Konversi ke dictionary untuk JSON.
+        Pasal 6.2.6.6g: kirim kode kondisi (-1/-2/-3) saat status tidak normal.
+        """
+        status = OperationalState.get()
+        if status != OperationalStatus.NORMAL:
+            code = int(status)
+            return {
+                "datetime": self.timestamp,
+                "pH": code, "tss": code, "debit": code,
+                "cod": code, "nh3n": code,
+            }
         return {
             "datetime": self.timestamp,
             "pH": round(self.ph, 2),
             "tss": round(self.tss, 2),
             "debit": round(self.debit, 2),
             "cod": round(self.cod, 2),
-            "nh3n": round(self.nh3n, 2)
+            "nh3n": round(self.nh3n, 2),
         }
-    
+
     def to_dict_with_power(self) -> dict:
-        """Konversi ke dictionary dengan data arus dan tegangan"""
+        """Konversi ke dictionary dengan data arus dan tegangan.
+        Pasal 6.2.6.6g: parameter kualitas air diganti kode kondisi saat tidak normal.
+        """
+        status = OperationalState.get()
+        if status != OperationalStatus.NORMAL:
+            code = int(status)
+            return {
+                "datetime": self.timestamp,
+                "pH": code, "tss": code, "debit": code,
+                "cod": code, "nh3n": code,
+                "current": round(self.current, 2),
+                "voltage": round(self.voltage, 2),
+            }
         return {
             "datetime": self.timestamp,
             "pH": round(self.ph, 2),
@@ -41,7 +92,7 @@ class SensorData:
             "current": round(self.current, 2),
             "voltage": round(self.voltage, 2),
             "cod": round(self.cod, 2),
-            "nh3n": round(self.nh3n, 2)
+            "nh3n": round(self.nh3n, 2),
         }
     
     def __str__(self):

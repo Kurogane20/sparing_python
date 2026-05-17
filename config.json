@@ -18,8 +18,7 @@
         "ph_slave_id": 2,
         "tss_slave_id": 10,
         "debit_slave_id": 1,
-        "gpio_de_pin": 4,
-        "gpio_re_pin": -1
+        "debit_closed_channel": false
     },
     "offsets": {
         "ph_offset": 0.0,
@@ -38,5 +37,12 @@
         "data_send_count": 30,
         "wifi_check_interval": 1
     },
-    "data_backup_file": "data_backup.json"
+    "data_backup_file": "data_backup.json",
+    "display_sensors": [
+        "pH",
+        "TSS",
+        "DEBIT",
+        "COD",
+        "NH3-N"
+    ]
 }
