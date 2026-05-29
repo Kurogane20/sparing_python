@@ -1,6 +1,7 @@
 """
-SPARING Display GUI - v3
+SPARING Display GUI - v4
 Target: 7" 1024x600 display, Raspberry Pi OS
+Style: Industrial / SCADA — amber accent, blue-charcoal palette
 """
 
 import sys
@@ -13,12 +14,12 @@ from typing import List, Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QProgressBar, QCheckBox,
-    QGraphicsDropShadowEffect, QScrollArea,
+    QScrollArea,
     QDialog, QLineEdit, QDoubleSpinBox, QPushButton, QMessageBox,
     QTabWidget, QFormLayout, QGroupBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath, QLinearGradient
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath
 
 from config import config
 from models import SensorData, OperationalStatus, OperationalState
@@ -32,7 +33,7 @@ def _rfile(path):
 
 def get_cpu_temp() -> str:
     v = _rfile("/sys/class/thermal/thermal_zone0/temp")
-    return f"{int(v)/1000:.1f}°C" if v else "N/A"
+    return f"{int(v)/1000:.1f}C" if v else "N/A"
 
 def get_mem() -> str:
     try:
@@ -65,42 +66,43 @@ def get_ip() -> str:
 # ── Theme ─────────────────────────────────────────────────────
 
 class T:
-    BG      = "#0d1117"
-    CARD    = "#161b22"
-    PANEL   = "#1c2128"
-    BORDER  = "#30363d"
-    BORDER2 = "#21262d"
+    # Blue-charcoal industrial palette — not GitHub dark
+    BG      = "#111318"   # dark blue-charcoal background
+    CARD    = "#191d28"   # card surface
+    PANEL   = "#1d2133"   # sidebar panels
+    BORDER  = "#2d3252"   # main border, blue-tinted
+    BORDER2 = "#232738"   # subtle inner borders
 
-    FG1 = "#e6edf3"
-    FG2 = "#8b949e"
-    FG3 = "#6e7681"
+    FG1 = "#c8d4f0"   # primary text (slightly blue-tinted white)
+    FG2 = "#7888b0"   # secondary (muted blue-gray)
+    FG3 = "#4d5878"   # tertiary (dark muted)
 
-    GREEN  = "#2da44e"
-    YELLOW = "#d29922"
-    BLUE   = "#388bfd"
-    RED    = "#f85149"
-    PURPLE = "#a371f7"
-    CYAN   = "#39c5cf"
+    # Functional colors — used only for meaning, not decoration
+    AMBER  = "#e0a030"   # primary accent — industrial amber
+    GREEN  = "#28c76a"   # good/normal state
+    BLUE   = "#4a90d9"   # data / info
+    RED    = "#e84040"   # error / alarm
+    CYAN   = "#22bfd4"   # secondary data
 
-    OK   = "#2da44e"
-    WARN = "#d29922"
-    ERR  = "#f85149"
-    OFF  = "#6e7681"
+    OK   = "#28c76a"
+    WARN = "#e0a030"
+    ERR  = "#e84040"
+    OFF  = "#4d5878"
 
     FONT = "DejaVu Sans" if platform.system() == "Linux" else "Segoe UI"
     MONO = "DejaVu Sans Mono" if platform.system() == "Linux" else "Consolas"
 
+    # Sensor: (accent color, unit, lo, hi)
     SENSORS = {
-        "pH":    (GREEN,  "",      6.0,  9.0),
-        "TSS":   (YELLOW, "mg/L",  0,    200),
-        "DEBIT": (BLUE,   "m³/j",  0,    100),
+        "pH":    (CYAN,   "",      6.0,  9.0),
+        "TSS":   (AMBER,  "mg/L",  0,    200),
+        "DEBIT": (BLUE,   "m3/j",  0,    100),
         "COD":   (RED,    "mg/L",  0,    300),
-        "NH3-N": (PURPLE, "mg/L",  0,    10),
+        "NH3-N": (GREEN,  "mg/L",  0,    10),
     }
 
     @staticmethod
     def rgba(hex_color: str, alpha: int) -> str:
-        """Konversi #RRGGBB + alpha 0-255 ke rgba() yang valid di Qt stylesheet."""
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
         b = int(hex_color[5:7], 16)
@@ -119,7 +121,8 @@ class SignalBridge(QObject):
 # ── Sparkline ─────────────────────────────────────────────────
 
 class Spark(QWidget):
-    def __init__(self, color: str, h=44, parent=None):
+    """Clean line-only sparkline, no gradient fill."""
+    def __init__(self, color: str, h=36, parent=None):
         super().__init__(parent)
         self.clr = QColor(color)
         self.pts: List[float] = [0.0] * 30
@@ -136,7 +139,7 @@ class Spark(QWidget):
         mn, mx = min(self.pts), max(self.pts)
         rng = mx - mn if mx != mn else 1.0
         step = w / (len(self.pts) - 1)
-        pts = [QPoint(int(i * step), int(h - (v - mn) / rng * (h - 6) - 3))
+        pts = [QPoint(int(i * step), int(h - (v - mn) / rng * (h - 4) - 2))
                for i, v in enumerate(self.pts)]
         path = QPainterPath()
         path.moveTo(pts[0].x(), pts[0].y())
@@ -144,24 +147,31 @@ class Spark(QWidget):
             cx = (pts[i].x() + pts[i+1].x()) // 2
             path.cubicTo(cx, pts[i].y(), cx, pts[i+1].y(),
                          pts[i+1].x(), pts[i+1].y())
+        # Subtle baseline fill
         fill = QPainterPath(path)
         fill.lineTo(w, h); fill.lineTo(0, h); fill.closeSubpath()
-        g = QLinearGradient(0, 0, 0, h)
         c = self.clr
-        g.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 110))
+        from PyQt6.QtGui import QLinearGradient
+        g = QLinearGradient(0, 0, 0, h)
+        g.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 40))
         g.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0))
         p.fillPath(fill, g)
-        p.setPen(QPen(self.clr, 1.5))
+        p.setPen(QPen(self.clr, 1.2))
         p.drawPath(path)
 
-# ── Status Badge ──────────────────────────────────────────────
+# ── Status Tag ────────────────────────────────────────────────
 
-class Badge(QLabel):
-    _COLORS = {"NORMAL": T.OK, "WARNING": T.WARN, "ALARM": T.ERR}
+class StatusTag(QLabel):
+    """Rectangular status tag — not a pill. Sharp corners, technical look."""
+    _COLORS = {
+        "NORMAL":  T.GREEN,
+        "WARNING": T.WARN,
+        "ALARM":   T.ERR,
+    }
 
     def __init__(self, parent=None):
         super().__init__("NORMAL", parent)
-        self.setFixedSize(80, 22)
+        self.setFixedSize(72, 18)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.set("NORMAL")
 
@@ -170,14 +180,17 @@ class Badge(QLabel):
         c = self._COLORS.get(s, T.OFF)
         self.setText(s)
         self.setStyleSheet(
-            f"color:{c};font-weight:bold;font-size:10px;"
-            f"border:1px solid {c};border-radius:11px;"
-            f"background:{T.rgba(c, 30)};"
+            f"color:{c};font-weight:bold;font-size:9px;"
+            f"font-family:'{T.MONO}';"
+            f"border:1px solid {c};border-radius:2px;"
+            f"background:{T.rgba(c, 22)};"
+            f"letter-spacing:0.5px;"
         )
 
 # ── Sensor Card ───────────────────────────────────────────────
 
 class SensorCard(QFrame):
+    """Industrial meter card with left accent bar — no glow effects."""
     def __init__(self, name, color, unit, lo, hi, parent=None):
         super().__init__(parent)
         self.lo, self.hi = lo, hi
@@ -187,70 +200,77 @@ class SensorCard(QFrame):
             SensorCard {{
                 background: {T.CARD};
                 border: 1px solid {T.BORDER};
-                border-top: 3px solid {color};
-                border-radius: 6px;
+                border-radius: 3px;
             }}
         """)
 
-        vb = QVBoxLayout(self)
-        vb.setContentsMargins(12, 10, 12, 8)
-        vb.setSpacing(0)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # Baris: judul + badge
+        # Left accent bar
+        bar = QFrame()
+        bar.setFixedWidth(3)
+        bar.setStyleSheet(f"background:{color};border:none;border-radius:0px;")
+        outer.addWidget(bar)
+
+        # Card content
+        inner = QWidget()
+        inner.setStyleSheet("background:transparent;")
+        vb = QVBoxLayout(inner)
+        vb.setContentsMargins(10, 8, 10, 6)
+        vb.setSpacing(0)
+        outer.addWidget(inner, 1)
+
+        # Header row
         hdr = QHBoxLayout(); hdr.setSpacing(4)
         tl = QLabel(name)
         tl.setStyleSheet(
-            f"color:{T.FG2};font-size:11px;font-weight:bold;"
-            f"font-family:'{T.FONT}';border:none;background:transparent;"
+            f"color:{T.FG2};font-size:10px;font-weight:bold;"
+            f"font-family:'{T.FONT}';letter-spacing:1px;"
         )
-        self.badge = Badge()
-        hdr.addWidget(tl); hdr.addStretch(); hdr.addWidget(self.badge)
+        self.tag = StatusTag()
+        hdr.addWidget(tl); hdr.addStretch(); hdr.addWidget(self.tag)
         vb.addLayout(hdr)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background:{T.BORDER2};border:none;margin-top:6px;")
+        sep.setStyleSheet(f"background:{T.BORDER2};border:none;margin-top:5px;margin-bottom:4px;")
         vb.addWidget(sep)
 
         vb.addStretch(2)
 
-        # Nilai utama
-        self.val = QLabel("–")
+        # Value — no glow effect, color only
+        self.val = QLabel("---")
         self.val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.val.setStyleSheet(
-            f"color:{color};font-size:46px;font-weight:bold;"
-            f"font-family:'{T.MONO}';border:none;background:transparent;"
+            f"color:{color};font-size:44px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
         )
-        fx = QGraphicsDropShadowEffect()
-        fx.setBlurRadius(18); fx.setColor(QColor(color)); fx.setOffset(0, 0)
-        self.val.setGraphicsEffect(fx)
         vb.addWidget(self.val)
 
         self.unit_lbl = QLabel(unit)
         self.unit_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.unit_lbl.setStyleSheet(
-            f"color:{T.FG3};font-size:11px;border:none;background:transparent;"
+            f"color:{T.FG3};font-size:10px;"
         )
         vb.addWidget(self.unit_lbl)
 
-        # Timestamp bacaan terakhir
-        self._ts_lbl = QLabel("–")
+        self._ts_lbl = QLabel("--:--:--")
         self._ts_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ts_lbl.setStyleSheet(
-            f"color:{T.FG3};font-size:9px;border:none;background:transparent;"
+            f"color:{T.FG3};font-size:9px;font-family:'{T.MONO}';"
         )
         vb.addWidget(self._ts_lbl)
 
         vb.addStretch(2)
 
-        # Info baku mutu
-        info_row = QHBoxLayout(); info_row.setSpacing(0)
-        lim = QLabel(f"Baku Mutu  {lo} – {hi} {unit}")
-        lim.setStyleSheet(f"color:{T.FG3};font-size:10px;border:none;background:transparent;")
-        info_row.addWidget(lim); info_row.addStretch()
-        vb.addLayout(info_row)
-        vb.addSpacing(4)
+        # Limit row
+        lim = QLabel(f"Baku mutu  {lo} – {hi} {unit}")
+        lim.setStyleSheet(f"color:{T.FG3};font-size:9px;")
+        vb.addWidget(lim)
+        vb.addSpacing(3)
 
         self.spark = Spark(color)
         vb.addWidget(self.spark)
@@ -259,13 +279,13 @@ class SensorCard(QFrame):
         self.val.setText(f"{v:.2f}")
         self.spark.push(v)
         if ts:
-            self._ts_lbl.setText(datetime.fromtimestamp(ts).strftime("Pukul %H:%M:%S"))
+            self._ts_lbl.setText(datetime.fromtimestamp(ts).strftime("%H:%M:%S"))
         if self.lo <= v <= self.hi:
-            self.badge.set("NORMAL")
+            self.tag.set("NORMAL")
         elif v > self.hi * 1.2:
-            self.badge.set("ALARM")
+            self.tag.set("ALARM")
         else:
-            self.badge.set("WARNING")
+            self.tag.set("WARNING")
 
 # ── Sidebar Section ───────────────────────────────────────────
 
@@ -276,34 +296,45 @@ class Section(QFrame):
             QFrame {{
                 background:{T.PANEL};
                 border:1px solid {T.BORDER};
-                border-radius:5px;
+                border-radius:3px;
             }}
         """)
         self._vb = QVBoxLayout(self)
-        self._vb.setContentsMargins(9, 7, 9, 7)
+        self._vb.setContentsMargins(8, 6, 8, 6)
         self._vb.setSpacing(3)
 
-        c = color or T.FG2
+        c = color or T.FG3
+        hdr_row = QHBoxLayout(); hdr_row.setSpacing(5)
+        # Small colored accent square
+        sq = QFrame()
+        sq.setFixedSize(3, 11)
+        sq.setStyleSheet(f"background:{c};border:none;")
         th = QLabel(title.upper())
         th.setStyleSheet(
-            f"color:{c};font-weight:bold;font-size:10px;"
-            f"letter-spacing:1px;border:none;background:transparent;"
+            f"color:{c};font-weight:bold;font-size:9px;"
+            f"letter-spacing:1.5px;font-family:'{T.FONT}';"
         )
-        self._vb.addWidget(th)
+        hdr_row.addWidget(sq)
+        hdr_row.addWidget(th)
+        hdr_row.addStretch()
+        self._vb.addLayout(hdr_row)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background:{T.BORDER};border:none;margin-bottom:2px;")
+        sep.setStyleSheet(f"background:{T.BORDER};border:none;margin-bottom:1px;")
         self._vb.addWidget(sep)
 
     def row(self, label, val="–", vc=None) -> QLabel:
         vc = vc or T.FG1
         hl = QHBoxLayout(); hl.setSpacing(4)
         lb = QLabel(label)
-        lb.setStyleSheet(f"color:{T.FG2};font-size:10px;border:none;")
+        lb.setStyleSheet(f"color:{T.FG3};font-size:9px;")
         vl = QLabel(val)
-        vl.setStyleSheet(f"color:{vc};font-size:10px;font-weight:bold;border:none;")
+        vl.setStyleSheet(
+            f"color:{vc};font-size:10px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
+        )
         vl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         hl.addWidget(lb); hl.addStretch(); hl.addWidget(vl)
         self._vb.addLayout(hl)
@@ -315,24 +346,24 @@ class Section(QFrame):
 
 _DS = f"""
 QDialog{{background:{T.BG};}}
-QTabWidget::pane{{border:1px solid {T.BORDER};background:{T.PANEL};border-radius:4px;}}
-QTabBar::tab{{background:{T.CARD};color:{T.FG2};border:1px solid {T.BORDER};padding:5px 14px;margin-right:2px;border-top-left-radius:4px;border-top-right-radius:4px;}}
-QTabBar::tab:selected{{background:{T.PANEL};color:{T.OK};border-bottom:2px solid {T.OK};}}
-QGroupBox{{color:{T.FG1};border:1px solid {T.BORDER};border-radius:5px;margin-top:8px;padding-top:12px;font-weight:bold;font-size:11px;}}
+QTabWidget::pane{{border:1px solid {T.BORDER};background:{T.PANEL};border-radius:3px;}}
+QTabBar::tab{{background:{T.CARD};color:{T.FG2};border:1px solid {T.BORDER};padding:5px 14px;margin-right:2px;}}
+QTabBar::tab:selected{{background:{T.PANEL};color:{T.AMBER};border-bottom:2px solid {T.AMBER};}}
+QGroupBox{{color:{T.FG1};border:1px solid {T.BORDER};border-radius:3px;margin-top:8px;padding-top:12px;font-weight:bold;font-size:11px;}}
 QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;}}
 QLabel{{color:{T.FG2};font-size:11px;}}
-QLineEdit{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:4px;padding:5px 8px;font-size:11px;}}
-QLineEdit:focus{{border:1px solid {T.OK};}}
-QDoubleSpinBox{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:4px;padding:5px 8px;font-size:12px;font-weight:bold;}}
-QDoubleSpinBox:focus{{border:1px solid {T.OK};}}
+QLineEdit{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:5px 8px;font-size:11px;}}
+QLineEdit:focus{{border:1px solid {T.AMBER};}}
+QDoubleSpinBox{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:5px 8px;font-size:12px;font-weight:bold;}}
+QDoubleSpinBox:focus{{border:1px solid {T.AMBER};}}
 QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{{width:18px;border:none;background:{T.BORDER};}}
-QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover{{background:{T.OK};}}
-QPushButton{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:4px;padding:6px 14px;font-size:11px;font-weight:bold;}}
-QPushButton:hover{{border:1px solid {T.OK};color:{T.OK};}}
-QPushButton#S{{background:{T.OK};color:white;border:none;}}
-QPushButton#S:hover{{background:#3ab55a;}}
-QPushButton#W{{background:#1f6feb;color:white;border:none;}}
-QPushButton#W:hover{{background:{T.BLUE};}}
+QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover{{background:{T.AMBER};}}
+QPushButton{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:6px 14px;font-size:11px;font-weight:bold;}}
+QPushButton:hover{{border:1px solid {T.AMBER};color:{T.AMBER};}}
+QPushButton#S{{background:{T.OK};color:#000;border:none;}}
+QPushButton#S:hover{{background:#34d87a;}}
+QPushButton#W{{background:{T.BLUE};color:white;border:none;}}
+QPushButton#W:hover{{background:#5aa0e8;}}
 """
 
 class SettingsDialog(QDialog):
@@ -346,7 +377,7 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(12, 10, 12, 10); root.setSpacing(8)
 
         hd = QLabel("PENGATURAN SISTEM")
-        hd.setStyleSheet(f"color:{T.FG1};font-size:13px;font-weight:bold;")
+        hd.setStyleSheet(f"color:{T.FG1};font-size:13px;font-weight:bold;letter-spacing:2px;")
         hd.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(hd)
 
@@ -415,7 +446,7 @@ class SettingsDialog(QDialog):
 
         self.s_ph  = spin(-14,  14,  0.01, config.offsets.ph_offset,   "  pH")
         self.s_tss = spin(-999, 999, 0.1,  config.offsets.tss_offset,  "  mg/L")
-        self.s_dbt = spin(-999, 999, 0.1,  config.offsets.debit_offset, "  m³/j")
+        self.s_dbt = spin(-999, 999, 0.1,  config.offsets.debit_offset, "  m3/j")
         fm.addRow("Offset pH:", self.s_ph)
         fm.addRow("Offset TSS:", self.s_tss)
         fm.addRow("Offset Debit:", self.s_dbt)
@@ -423,12 +454,9 @@ class SettingsDialog(QDialog):
         br = QPushButton("Reset Semua ke 0")
         br.clicked.connect(lambda: [s.setValue(0) for s in [self.s_ph, self.s_tss, self.s_dbt]])
         vb.addWidget(br)
-        note = QLabel("pH: nilai+offset (maks 14) | TSS/Debit: nilai−offset")
+        note = QLabel("pH: nilai+offset (maks 14) | TSS/Debit: nilai-offset")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
         vb.addWidget(note)
-        note2 = QLabel("⚠ Offset aktif di mode sensor nyata. Mode dummy tidak menggunakan offset.")
-        note2.setStyleSheet(f"color:{T.WARN};font-size:9px;"); note2.setWordWrap(True)
-        vb.addWidget(note2)
         vb.addStretch(); return w
 
     def _t_params(self):
@@ -436,9 +464,9 @@ class SettingsDialog(QDialog):
         g = QGroupBox("Parameter yang Ditampilkan")
         gvb = QVBoxLayout(g); gvb.setSpacing(8); gvb.setContentsMargins(10, 16, 10, 10)
         INFO = {
-            "pH":    "Derajat keasaman air (tanpa satuan)",
+            "pH":    "Derajat keasaman air",
             "TSS":   "Total Suspended Solid (mg/L)",
-            "DEBIT": "Laju aliran air (m³/jam)",
+            "DEBIT": "Laju aliran air (m3/jam)",
             "COD":   "Chemical Oxygen Demand (mg/L)",
             "NH3-N": "Amonia nitrogen (mg/L)",
         }
@@ -460,12 +488,12 @@ class SettingsDialog(QDialog):
         self._cb_closed = QCheckBox("Saluran Tertutup (Closed Channel)")
         self._cb_closed.setChecked(config.modbus.debit_closed_channel)
         self._cb_closed.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
-        desc_closed = QLabel("Centang: Float 32-bit, reg[1]<<16|reg[0]  •  Kosong: Double 64-bit, reg 15-18")
+        desc_closed = QLabel("Centang: Float 32-bit reg[1]<<16|reg[0]  |  Kosong: Double 64-bit reg 15-18")
         desc_closed.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_closed.setWordWrap(True)
         g2vb.addWidget(self._cb_closed); g2vb.addWidget(desc_closed)
         vb.addWidget(g2)
 
-        note = QLabel("Minimal 1 parameter harus aktif. Perubahan langsung terlihat setelah Simpan.")
+        note = QLabel("Min. 1 parameter harus aktif. Perubahan langsung terlihat setelah Simpan.")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
         vb.addWidget(note); vb.addStretch(); return w
 
@@ -526,20 +554,19 @@ class SettingsDialog(QDialog):
 
 class MainWindow(QMainWindow):
 
-    # Metadata status operasional: label, warna teks, warna banner
     _STATUS_META = {
-        OperationalStatus.NORMAL:      ("● NORMAL",                T.OK,   None),
-        OperationalStatus.STOPPED:     ("● -1  PRODUKSI BERHENTI", T.WARN, T.WARN),
-        OperationalStatus.CALIBRATION: ("● -2  KALIBRASI/AUDIT",   T.BLUE, T.BLUE),
-        OperationalStatus.MALFUNCTION: ("● -3  ALAT RUSAK",        T.ERR,  T.ERR),
+        OperationalStatus.NORMAL:      ("NORMAL",           T.OK,   None),
+        OperationalStatus.STOPPED:     ("-1  BERHENTI",     T.WARN, T.WARN),
+        OperationalStatus.CALIBRATION: ("-2  KALIBRASI",    T.BLUE, T.BLUE),
+        OperationalStatus.MALFUNCTION: ("-3  ALAT RUSAK",   T.ERR,  T.ERR),
     }
     _BANNER_TEXT = {
         OperationalStatus.STOPPED:
-            "⚠  PRODUKSI BERHENTI — RTU mengirim nilai  -1  ke server",
+            "PRODUKSI BERHENTI  —  RTU mengirim nilai  -1  ke server",
         OperationalStatus.CALIBRATION:
-            "ℹ  KALIBRASI / AUDIT AKTIF — RTU mengirim nilai  -2  ke server",
+            "KALIBRASI / AUDIT AKTIF  —  RTU mengirim nilai  -2  ke server",
         OperationalStatus.MALFUNCTION:
-            "✗  ALAT RUSAK / TIDAK OPTIMAL — RTU mengirim nilai  -3  ke server",
+            "ALAT RUSAK / TIDAK OPTIMAL  —  RTU mengirim nilai  -3  ke server",
     }
 
     def __init__(self):
@@ -549,14 +576,12 @@ class MainWindow(QMainWindow):
         self.resize(1024, 600)
         self.setStyleSheet(f"QMainWindow{{background:{T.BG};}}")
 
-        # Pelacakan kepatuhan (compliance)
         self._total_readings  = 0
         self._ok_readings     = 0
         self._real            = False
         self._t0              = datetime.now()
         self._tick_n          = 0
 
-        # Hubungkan sinyal
         self.signal_bridge.sensor_update.connect(self._on_sensor)
         self.signal_bridge.connection_update.connect(self._on_conn)
         self.signal_bridge.notification.connect(self._show_notification)
@@ -594,69 +619,95 @@ class MainWindow(QMainWindow):
 
     def _mk_header(self, root):
         hdr = QFrame()
-        hdr.setFixedHeight(44)
+        hdr.setFixedHeight(42)
         hdr.setStyleSheet(
-            f"QFrame{{background:{T.PANEL};border-bottom:1px solid {T.BORDER};}}"
+            f"QFrame{{background:{T.PANEL};"
+            f"border-bottom:1px solid {T.BORDER};}}"
         )
         hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(14, 0, 14, 0)
-        hl.setSpacing(8)
+        hl.setContentsMargins(12, 0, 12, 0)
+        hl.setSpacing(10)
 
-        logo = QLabel("⬡ MITRA MUTIARA")
-        logo.setStyleSheet(f"color:{T.FG1};font-size:13px;font-weight:800;border:none;")
-        hl.addWidget(logo)
+        # Brand — text only, no emoji
+        brand = QWidget()
+        brand.setStyleSheet("background:transparent;")
+        bl = QHBoxLayout(brand)
+        bl.setContentsMargins(0,0,0,0); bl.setSpacing(6)
+        accent_bar = QFrame()
+        accent_bar.setFixedSize(3, 20)
+        accent_bar.setStyleSheet(f"background:{T.AMBER};border:none;")
+        bl.addWidget(accent_bar)
+        logo = QLabel("MITRA MUTIARA")
+        logo.setStyleSheet(
+            f"color:{T.FG1};font-size:12px;font-weight:bold;"
+            f"letter-spacing:2px;font-family:'{T.FONT}';"
+        )
+        sub = QLabel("SPARING v4")
+        sub.setStyleSheet(
+            f"color:{T.FG3};font-size:9px;font-family:'{T.MONO}';"
+        )
+        bl.addWidget(logo)
+        bl.addWidget(sub)
+        hl.addWidget(brand)
 
-        self._h_status = QLabel("● ONLINE")
-        self._h_status.setStyleSheet(f"color:{T.OK};font-size:10px;font-weight:bold;border:none;")
+        self._h_status = QLabel("ONLINE")
+        self._h_status.setFixedWidth(56)
+        self._h_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._h_status.setStyleSheet(
+            f"color:{T.OK};font-size:9px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
+            f"border:1px solid {T.OK};border-radius:2px;"
+            f"background:{T.rgba(T.OK,18)};padding:2px 4px;"
+        )
         hl.addWidget(self._h_status)
-
         hl.addStretch()
 
         self._h_time = QLabel("--:--:--")
         self._h_time.setStyleSheet(
-            f"color:{T.FG1};font-size:20px;font-weight:bold;"
-            f"font-family:'{T.MONO}';border:none;"
+            f"color:{T.FG1};font-size:22px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
         )
         hl.addWidget(self._h_time)
 
         self._h_date = QLabel(datetime.now().strftime("%d %b %Y"))
-        self._h_date.setStyleSheet(f"color:{T.FG3};font-size:10px;border:none;")
+        self._h_date.setStyleSheet(f"color:{T.FG3};font-size:10px;")
         hl.addWidget(self._h_date)
-
         hl.addStretch()
 
-        # Tombol aksi (layak sentuh: padding lebih besar)
-        def btn_chip(text, color=T.FG3, bc=T.BORDER):
+        # Action buttons — text only, clean rectangular
+        def action_btn(text, color=T.FG3):
             lb = QLabel(text)
             lb.setStyleSheet(
-                f"color:{color};border:1px solid {bc};border-radius:4px;"
-                f"padding:4px 12px;font-size:10px;font-weight:bold;"
+                f"color:{color};border:1px solid {T.rgba(color,100)};"
+                f"border-radius:2px;padding:3px 10px;"
+                f"font-size:9px;font-weight:bold;font-family:'{T.FONT}';"
+                f"letter-spacing:0.5px;"
             )
             lb.setCursor(Qt.CursorShape.PointingHandCursor)
             return lb
 
-        self._fs_chip = btn_chip("⛶  MODE JENDELA")
-        self._fs_chip.mousePressEvent = self._toggle_fullscreen
-        hl.addWidget(self._fs_chip)
+        self._fs_btn = action_btn("JENDELA", T.FG2)
+        self._fs_btn.mousePressEvent = self._toggle_fullscreen
+        hl.addWidget(self._fs_btn)
 
-        st = btn_chip("⚙  PENGATURAN", T.WARN, T.WARN)
-        st.mousePressEvent = lambda _: SettingsDialog(self).exec()
-        hl.addWidget(st)
+        cfg_btn = action_btn("PENGATURAN", T.AMBER)
+        cfg_btn.mousePressEvent = lambda _: SettingsDialog(self).exec()
+        hl.addWidget(cfg_btn)
 
         hl.addSpacing(4)
 
-        # Chip info sistem (informatif, tidak interaktif)
-        def info_chip(text):
+        def info_tag(text):
             lb = QLabel(text)
             lb.setStyleSheet(
-                f"color:{T.FG3};border:1px solid {T.BORDER};border-radius:3px;"
-                f"padding:2px 8px;font-size:9px;"
+                f"color:{T.FG3};border:1px solid {T.BORDER};"
+                f"border-radius:2px;padding:2px 7px;font-size:9px;"
+                f"font-family:'{T.MONO}';"
             )
             return lb
 
-        self._chip_ip  = info_chip(f"IP {get_ip()}")
-        self._chip_cpu = info_chip("CPU –")
-        self._chip_ram = info_chip("RAM –")
+        self._chip_ip  = info_tag(f"IP {get_ip()}")
+        self._chip_cpu = info_tag("CPU --")
+        self._chip_ram = info_tag("RAM --")
         for c in (self._chip_ip, self._chip_cpu, self._chip_ram):
             hl.addWidget(c)
 
@@ -669,10 +720,10 @@ class MainWindow(QMainWindow):
     def _toggle_fullscreen(self, _=None):
         if self.isFullScreen():
             self.showNormal()
-            self._fs_chip.setText("⛶  MODE LAYAR PENUH")
+            self._fs_btn.setText("LAYAR PENUH")
         else:
             self.showFullScreen()
-            self._fs_chip.setText("⛶  MODE JENDELA")
+            self._fs_btn.setText("JENDELA")
 
     def _tick(self):
         self._h_time.setText(datetime.now().strftime("%H:%M:%S"))
@@ -680,14 +731,15 @@ class MainWindow(QMainWindow):
         if self._tick_n % 5 == 0:
             temp = get_cpu_temp()
             try:
-                tv  = float(temp.replace("°C", ""))
+                tv  = float(temp.replace("C", ""))
                 col = T.ERR if tv > 70 else (T.WARN if tv > 55 else T.FG3)
             except ValueError:
                 col = T.FG3
             self._chip_cpu.setText(f"CPU {temp}")
             self._chip_cpu.setStyleSheet(
-                f"color:{col};border:1px solid {col};border-radius:3px;"
-                f"padding:2px 8px;font-size:9px;"
+                f"color:{col};border:1px solid {T.rgba(col,80)};"
+                f"border-radius:2px;padding:2px 7px;font-size:9px;"
+                f"font-family:'{T.MONO}';"
             )
             self._chip_ram.setText(f"RAM {get_mem()}")
             self._v_rpi.setText(get_rpi_voltage())
@@ -695,12 +747,14 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────── Status Banner ──
 
     def _mk_status_banner(self, root):
-        """Strip berwarna di bawah header — tampil saat status tidak NORMAL."""
         self._banner = QFrame()
-        self._banner.setFixedHeight(26)
+        self._banner.setFixedHeight(24)
         self._banner.setVisible(False)
         self._banner_lbl = QLabel()
         self._banner_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._banner_lbl.setStyleSheet(
+            f"font-family:'{T.MONO}';font-size:10px;font-weight:bold;letter-spacing:1px;"
+        )
         bl = QHBoxLayout(self._banner)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.addWidget(self._banner_lbl)
@@ -709,9 +763,8 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────── Notification Bar ──
 
     def _mk_notif_bar(self, root):
-        """Bar notifikasi di atas footer — tampil sementara saat ada pesan."""
         self._notif_bar = QFrame()
-        self._notif_bar.setFixedHeight(26)
+        self._notif_bar.setFixedHeight(24)
         self._notif_bar.setVisible(False)
         self._notif_lbl = QLabel()
         self._notif_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -731,14 +784,15 @@ class MainWindow(QMainWindow):
         elif any(w in msg_lo for w in ("gagal", "rusak", "error")):
             color = T.ERR
         else:
-            color = T.BLUE
+            color = T.AMBER
         self._notif_bar.setStyleSheet(
-            f"background:{T.rgba(color, 35)};"
-            f"border-top:1px solid {color};"
+            f"background:{T.rgba(color, 28)};"
+            f"border-top:1px solid {T.rgba(color, 120)};"
         )
-        self._notif_lbl.setText(f"● {msg}")
+        self._notif_lbl.setText(msg.upper())
         self._notif_lbl.setStyleSheet(
-            f"color:{color};font-weight:bold;font-size:10px;border:none;"
+            f"color:{color};font-weight:bold;font-size:9px;"
+            f"font-family:'{T.MONO}';letter-spacing:1px;"
         )
         self._notif_bar.setVisible(True)
         self._notif_timer.start(duration)
@@ -765,15 +819,15 @@ class MainWindow(QMainWindow):
         vb.setContentsMargins(0, 0, 0, 0)
         vb.setSpacing(5)
 
-        # ── 1. STATUS OPERASIONAL (paling atas — regulasi kritis) ──
+        # ── 1. STATUS OPERASIONAL ──
         s_op = Section("Status Operasional", color=T.WARN)
-        self._op_status_lbl = s_op.row("Status Saat Ini", "● NORMAL", T.OK)
+        self._op_status_lbl = s_op.row("Status", "NORMAL", T.OK)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
 
         def _op_btn(label, color):
             b = QPushButton(label)
-            b.setFixedHeight(44)          # touch target 44px
+            b.setFixedHeight(44)
             b.setStyleSheet(self._op_btn_style(color, active=False))
             return b
 
@@ -790,13 +844,14 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._btn_m3)
         s_op._vb.addLayout(btn_row)
 
-        self._btn_reset_op = QPushButton("✓  Kembali ke NORMAL")
-        self._btn_reset_op.setFixedHeight(34)
+        self._btn_reset_op = QPushButton("KEMBALI KE NORMAL")
+        self._btn_reset_op.setFixedHeight(32)
         self._btn_reset_op.setStyleSheet(
-            f"QPushButton{{background:{T.rgba(T.OK,40)};color:{T.OK};"
-            f"border:1px solid {T.OK};border-radius:4px;"
-            f"font-size:10px;font-weight:bold;}}"
-            f"QPushButton:hover{{background:{T.rgba(T.OK,80)};}}"
+            f"QPushButton{{background:{T.rgba(T.OK,30)};color:{T.OK};"
+            f"border:1px solid {T.OK};border-radius:2px;"
+            f"font-size:9px;font-weight:bold;font-family:'{T.MONO}';"
+            f"letter-spacing:0.5px;}}"
+            f"QPushButton:hover{{background:{T.rgba(T.OK,60)};}}"
         )
         self._btn_reset_op.setVisible(False)
         self._btn_reset_op.clicked.connect(lambda: self._set_status(OperationalStatus.NORMAL))
@@ -806,17 +861,18 @@ class MainWindow(QMainWindow):
         # ── 2. ALARM ──
         self._alarm_frame = QFrame()
         self._alarm_frame.setStyleSheet(
-            f"background:{T.rgba(T.OK, 24)};border:1px solid {T.OK};border-radius:5px;"
+            f"background:{T.rgba(T.OK, 18)};border:1px solid {T.rgba(T.OK,80)};border-radius:3px;"
         )
         af = QVBoxLayout(self._alarm_frame)
-        af.setContentsMargins(8, 6, 8, 6); af.setSpacing(3)
-        self._alarm_title = QLabel("✓  Tidak ada alarm")
+        af.setContentsMargins(8, 5, 8, 5); af.setSpacing(2)
+        self._alarm_title = QLabel("OK  —  Tidak ada alarm")
         self._alarm_title.setStyleSheet(
-            f"color:{T.OK};font-weight:bold;font-size:10px;border:none;"
+            f"color:{T.OK};font-weight:bold;font-size:9px;"
+            f"font-family:'{T.MONO}';letter-spacing:0.5px;"
         )
         self._alarm_desc = QLabel("Semua parameter dalam batas normal.")
         self._alarm_desc.setWordWrap(True)
-        self._alarm_desc.setStyleSheet(f"color:{T.FG2};font-size:10px;border:none;")
+        self._alarm_desc.setStyleSheet(f"color:{T.FG3};font-size:9px;")
         af.addWidget(self._alarm_title)
         af.addWidget(self._alarm_desc)
         vb.addWidget(self._alarm_frame)
@@ -825,10 +881,10 @@ class MainWindow(QMainWindow):
         s_buf = Section("Data Buffer", color=T.BLUE)
         self._buf_lbl = s_buf.row("Tersimpan", "0 data")
         bar = QProgressBar()
-        bar.setFixedHeight(5); bar.setValue(0)
+        bar.setFixedHeight(4); bar.setValue(0)
         bar.setStyleSheet(
-            f"QProgressBar{{background:#333;border:none;border-radius:2px;}}"
-            f"QProgressBar::chunk{{background:{T.YELLOW};border-radius:2px;}}"
+            f"QProgressBar{{background:{T.BORDER};border:none;border-radius:1px;}}"
+            f"QProgressBar::chunk{{background:{T.AMBER};border-radius:1px;}}"
         )
         self._buf_bar = bar
         s_buf.add(bar)
@@ -836,34 +892,36 @@ class MainWindow(QMainWindow):
 
         # ── 4. SERVER KLHK ──
         s_kl = Section("Server KLHK", color=T.BLUE)
-        self._kl_conn = s_kl.row("Koneksi", "Memeriksa...", T.FG2)
+        self._kl_conn = s_kl.row("Koneksi", "MEMERIKSA", T.FG2)
         self._kl_uid  = s_kl.row("UID", config.server.uid_2)
         vb.addWidget(s_kl)
 
         # ── 5. SERVER MITRA MUTIARA ──
         s_mm = Section("Server Mitra Mutiara", color=T.BLUE)
-        self._mm_conn = s_mm.row("Koneksi", "Memeriksa...", T.FG2)
+        self._mm_conn = s_mm.row("Koneksi", "MEMERIKSA", T.FG2)
         vb.addWidget(s_mm)
 
         # ── 6. MODBUS RS485 ──
         s_mb = Section("Modbus RS485 (USB)")
         self._mb_port = s_mb.row("Port", config.modbus.port)
-        self._mb_last = s_mb.row("Terakhir Dibaca", "–:–:–")
-        self._mb_stat = s_mb.row("Status", "Menunggu...", T.WARN)
+        self._mb_last = s_mb.row("Terakhir Dibaca", "--:--:--")
+        self._mb_stat = s_mb.row("Status", "MENUNGGU", T.WARN)
 
+        # LED indicators — rectangular, no emoji
         led_row = QHBoxLayout(); led_row.setSpacing(3)
         self._leds = {}
-        for num, name in [("01","PH"),("02","TSS"),("03","FLW"),("04","COD"),("05","NH3")]:
-            lb = QLabel(f"{num}\n{name}")
+        for key, name in [("PH","PH"),("TSS","TSS"),("FLW","FLW"),("COD","COD"),("NH3","NH3")]:
+            lb = QLabel(name)
             lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lb.setFixedWidth(36)
+            lb.setFixedWidth(34)
+            lb.setFixedHeight(20)
             lb.setStyleSheet(
-                f"background:{T.rgba(T.OFF,32)};color:{T.OFF};"
-                f"border:1px solid {T.OFF};border-radius:3px;"
-                f"font-size:9px;padding:2px;"
+                f"background:{T.rgba(T.OFF,22)};color:{T.OFF};"
+                f"border:1px solid {T.rgba(T.OFF,60)};border-radius:2px;"
+                f"font-size:8px;font-family:'{T.MONO}';font-weight:bold;"
             )
             led_row.addWidget(lb)
-            self._leds[name] = lb
+            self._leds[key] = lb
         s_mb._vb.addLayout(led_row)
         vb.addWidget(s_mb)
 
@@ -871,7 +929,7 @@ class MainWindow(QMainWindow):
         s_off = Section("Offset Kalibrasi")
         self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_offset:+.2f}")
         self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_offset:+.2f} mg/L")
-        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m³/j")
+        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m3/j")
         vb.addWidget(s_off)
 
         # ── 8. SISTEM RPi ──
@@ -887,8 +945,8 @@ class MainWindow(QMainWindow):
         sa.setStyleSheet("""
             QScrollArea{border:none;background:transparent;}
             QScrollArea>QWidget>QWidget{background:transparent;}
-            QScrollBar:vertical{border:none;background:#0d1117;width:4px;}
-            QScrollBar::handle:vertical{background:#333;min-height:20px;border-radius:2px;}
+            QScrollBar:vertical{border:none;background:#111318;width:4px;}
+            QScrollBar::handle:vertical{background:#2d3252;min-height:20px;border-radius:2px;}
             QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}
         """)
         parent.addWidget(sa, 1)
@@ -897,56 +955,63 @@ class MainWindow(QMainWindow):
     def _op_btn_style(color: str, active: bool) -> str:
         if active:
             return (
-                f"QPushButton{{background:{color};color:white;"
-                f"border:2px solid {color};border-radius:4px;"
-                f"font-size:10px;font-weight:bold;}}"
+                f"QPushButton{{background:{color};color:#000;"
+                f"border:2px solid {color};border-radius:2px;"
+                f"font-size:9px;font-weight:bold;font-family:'{T.MONO}';}}"
                 f"QPushButton:hover{{background:{color};}}"
             )
         return (
-            f"QPushButton{{background:{T.rgba(color, 35)};color:{color};"
-            f"border:1px solid {color};border-radius:4px;"
-            f"font-size:10px;font-weight:bold;}}"
-            f"QPushButton:hover{{background:{T.rgba(color, 70)};}}"
+            f"QPushButton{{background:{T.rgba(color, 28)};color:{color};"
+            f"border:1px solid {T.rgba(color,100)};border-radius:2px;"
+            f"font-size:9px;font-weight:bold;font-family:'{T.MONO}';}}"
+            f"QPushButton:hover{{background:{T.rgba(color, 60)};}}"
         )
 
     # ─────────────────────────────────────── Footer ──
 
     def _mk_footer(self, root):
         ft = QFrame()
-        ft.setFixedHeight(50)
+        ft.setFixedHeight(48)
         ft.setStyleSheet(
-            f"QFrame{{background:{T.PANEL};border-top:1px solid {T.BORDER};}}"
+            f"QFrame{{background:{T.PANEL};"
+            f"border-top:1px solid {T.BORDER};}}"
         )
         hl = QHBoxLayout(ft)
-        hl.setContentsMargins(14, 0, 14, 0)
+        hl.setContentsMargins(12, 0, 12, 0)
         hl.setSpacing(0)
 
         left = QWidget(); left.setStyleSheet("background:transparent;")
         ll = QVBoxLayout(left)
-        ll.setSpacing(2); ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(1); ll.setContentsMargins(0, 0, 0, 0)
         ll.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         port_lbl = QLabel(f"USB  {config.modbus.port}")
-        port_lbl.setStyleSheet(f"color:{T.FG2};font-size:11px;font-weight:bold;border:none;")
-        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  SPARING v3.0")
-        baud_lbl.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
+        port_lbl.setStyleSheet(
+            f"color:{T.FG2};font-size:10px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
+        )
+        baud_lbl = QLabel(f"Baud {config.modbus.baudrate}  |  SPARING RTU v4.0")
+        baud_lbl.setStyleSheet(f"color:{T.FG3};font-size:9px;font-family:'{T.MONO}';")
         ll.addWidget(port_lbl); ll.addWidget(baud_lbl)
         hl.addWidget(left)
 
         hl.addStretch()
 
-        def stat(label, init_val, color=T.FG1):
+        def stat_block(label, init_val, color=T.FG1):
             w = QWidget(); w.setStyleSheet("background:transparent;")
             vb = QVBoxLayout(w)
-            vb.setSpacing(1); vb.setContentsMargins(18, 5, 18, 5)
+            vb.setSpacing(0); vb.setContentsMargins(16, 4, 16, 4)
             vb.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lb = QLabel(label.upper())
             lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lb.setStyleSheet(f"color:{T.FG3};font-size:8px;letter-spacing:0.5px;border:none;")
+            lb.setStyleSheet(
+                f"color:{T.FG3};font-size:8px;letter-spacing:1px;"
+                f"font-family:'{T.FONT}';"
+            )
             lv = QLabel(init_val)
             lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lv.setStyleSheet(
-                f"color:{color};font-weight:bold;font-size:15px;"
-                f"font-family:'{T.MONO}';border:none;"
+                f"color:{color};font-weight:bold;font-size:16px;"
+                f"font-family:'{T.MONO}';"
             )
             vb.addWidget(lb); vb.addWidget(lv)
             return w, lv
@@ -960,10 +1025,10 @@ class MainWindow(QMainWindow):
             ch.addWidget(line)
             return c
 
-        u_blk, self._f_uptime     = stat("Uptime",    "0j 0m",  T.OK)
-        s_blk, self._f_sent       = stat("Terkirim",  "0 data", T.BLUE)
-        a_blk, self._f_alarms     = stat("Alarm",     "0",      T.FG1)
-        k_blk, self._f_compliance = stat("Kepatuhan", "—",      T.FG2)
+        u_blk, self._f_uptime     = stat_block("Uptime",    "0j 0m",  T.OK)
+        s_blk, self._f_sent       = stat_block("Terkirim",  "0 data", T.BLUE)
+        a_blk, self._f_alarms     = stat_block("Alarm",     "0",      T.FG1)
+        k_blk, self._f_compliance = stat_block("Kepatuhan", "--",     T.FG2)
 
         for i, w in enumerate([u_blk, s_blk, a_blk, k_blk]):
             if i > 0: hl.addWidget(vsep())
@@ -975,14 +1040,15 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(right)
         rl.setSpacing(2); rl.setContentsMargins(0, 0, 0, 0)
         rl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
-        self._ft_conn = QLabel("● ONLINE")
+        self._ft_conn = QLabel("ONLINE")
         self._ft_conn.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._ft_conn.setStyleSheet(
-            f"color:{T.OK};font-size:10px;font-weight:bold;border:none;"
+            f"color:{T.OK};font-size:9px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
         )
-        brand = QLabel("© Mitra Mutiara")
+        brand = QLabel("Mitra Mutiara Internasional")
         brand.setAlignment(Qt.AlignmentFlag.AlignRight)
-        brand.setStyleSheet(f"color:{T.FG3};font-size:9px;border:none;")
+        brand.setStyleSheet(f"color:{T.FG3};font-size:9px;")
         rl.addWidget(self._ft_conn); rl.addWidget(brand)
         hl.addWidget(right)
 
@@ -1018,30 +1084,40 @@ class MainWindow(QMainWindow):
 
         for lb in self._leds.values():
             lb.setStyleSheet(
-                f"background:{T.rgba(T.OK,32)};color:{T.OK};"
-                f"border:1px solid {T.OK};border-radius:3px;"
-                f"font-size:9px;padding:2px;"
+                f"background:{T.rgba(T.OK,22)};color:{T.OK};"
+                f"border:1px solid {T.rgba(T.OK,80)};border-radius:2px;"
+                f"font-size:8px;font-family:'{T.MONO}';font-weight:bold;"
             )
         ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
         self._mb_last.setText(ts_str)
-        self._mb_stat.setText("Berjalan")
-        self._mb_stat.setStyleSheet(f"color:{T.OK};font-size:10px;font-weight:bold;border:none;")
-
+        self._mb_stat.setText("AKTIF")
+        self._mb_stat.setStyleSheet(
+            f"color:{T.OK};font-size:10px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
+        )
         self._check_alarms(data)
 
     def _on_conn(self, ok: bool):
-        txt = "Terhubung" if ok else "Terputus"
+        txt = "TERHUBUNG" if ok else "TERPUTUS"
         col = T.OK if ok else T.OFF
         for lb in (self._mm_conn, self._kl_conn):
             lb.setText(txt)
-            lb.setStyleSheet(f"color:{col};font-size:10px;font-weight:bold;border:none;")
-        self._ft_conn.setText("● ONLINE" if ok else "○ OFFLINE")
+            lb.setStyleSheet(
+                f"color:{col};font-size:10px;font-weight:bold;"
+                f"font-family:'{T.MONO}';"
+            )
+        st = "ONLINE" if ok else "OFFLINE"
+        col2 = T.OK if ok else T.OFF
+        self._ft_conn.setText(st)
         self._ft_conn.setStyleSheet(
-            f"color:{T.OK if ok else T.OFF};font-size:10px;font-weight:bold;border:none;"
+            f"color:{col2};font-size:9px;font-weight:bold;font-family:'{T.MONO}';"
         )
-        self._h_status.setText("● ONLINE" if ok else "○ OFFLINE")
+        self._h_status.setText(st)
         self._h_status.setStyleSheet(
-            f"color:{T.OK if ok else T.OFF};font-size:10px;font-weight:bold;border:none;"
+            f"color:{col2};font-size:9px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
+            f"border:1px solid {col2};border-radius:2px;"
+            f"background:{T.rgba(col2,18)};padding:2px 4px;"
         )
 
     def _on_count(self, cur, mx):
@@ -1053,13 +1129,12 @@ class MainWindow(QMainWindow):
 
     def _check_alarms(self, d: SensorData):
         msgs = []
-        if not (6 <= d.ph <= 9):   msgs.append(f"pH {d.ph:.2f} di luar batas (6–9)")
+        if not (6 <= d.ph <= 9):   msgs.append(f"pH {d.ph:.2f} (batas 6-9)")
         if d.tss  > 200:           msgs.append(f"TSS {d.tss:.1f} mg/L > 200")
         if d.cod  > 300:           msgs.append(f"COD {d.cod:.1f} mg/L > 300")
         if d.nh3n > 10:            msgs.append(f"NH3-N {d.nh3n:.1f} mg/L > 10")
         n = len(msgs)
 
-        # Hitung kepatuhan sesi ini
         self._total_readings += 1
         if n == 0:
             self._ok_readings += 1
@@ -1067,42 +1142,43 @@ class MainWindow(QMainWindow):
         pct_col = T.OK if pct >= 90 else (T.WARN if pct >= 70 else T.ERR)
         self._f_compliance.setText(f"{pct:.1f}%")
         self._f_compliance.setStyleSheet(
-            f"color:{pct_col};font-weight:bold;font-size:15px;"
-            f"font-family:'{T.MONO}';border:none;"
+            f"color:{pct_col};font-weight:bold;font-size:16px;"
+            f"font-family:'{T.MONO}';"
         )
 
         self._f_alarms.setText(str(n))
         if n:
             self._f_alarms.setStyleSheet(
-                f"color:{T.ERR};font-weight:bold;font-size:15px;"
-                f"font-family:'{T.MONO}';border:none;"
+                f"color:{T.ERR};font-weight:bold;font-size:16px;"
+                f"font-family:'{T.MONO}';"
             )
             self._alarm_frame.setStyleSheet(
-                f"background:{T.rgba(T.ERR,24)};border:1px solid {T.ERR};border-radius:5px;"
+                f"background:{T.rgba(T.ERR,18)};border:1px solid {T.rgba(T.ERR,80)};border-radius:3px;"
             )
-            self._alarm_title.setText(f"⚠  ALARM: {n} parameter")
+            self._alarm_title.setText(f"ALARM  —  {n} parameter")
             self._alarm_title.setStyleSheet(
-                f"color:{T.ERR};font-weight:bold;font-size:10px;border:none;"
+                f"color:{T.ERR};font-weight:bold;font-size:9px;"
+                f"font-family:'{T.MONO}';letter-spacing:0.5px;"
             )
-            self._alarm_desc.setText("\n".join(msgs))
+            self._alarm_desc.setText("  ".join(msgs))
         else:
             self._f_alarms.setStyleSheet(
-                f"color:{T.FG1};font-weight:bold;font-size:15px;"
-                f"font-family:'{T.MONO}';border:none;"
+                f"color:{T.FG1};font-weight:bold;font-size:16px;"
+                f"font-family:'{T.MONO}';"
             )
             self._alarm_frame.setStyleSheet(
-                f"background:{T.rgba(T.OK,24)};border:1px solid {T.OK};border-radius:5px;"
+                f"background:{T.rgba(T.OK,18)};border:1px solid {T.rgba(T.OK,80)};border-radius:3px;"
             )
-            self._alarm_title.setText("✓  Tidak ada alarm")
+            self._alarm_title.setText("OK  —  Tidak ada alarm")
             self._alarm_title.setStyleSheet(
-                f"color:{T.OK};font-weight:bold;font-size:10px;border:none;"
+                f"color:{T.OK};font-weight:bold;font-size:9px;"
+                f"font-family:'{T.MONO}';letter-spacing:0.5px;"
             )
             self._alarm_desc.setText("Semua parameter dalam batas normal.")
 
     # ─────────────────────────────────────── Status Operasional ──
 
     def _set_status(self, status: OperationalStatus):
-        # Dialog konfirmasi untuk aksi berbahaya
         if status != OperationalStatus.NORMAL:
             label, color, _ = self._STATUS_META[status]
             reply = QMessageBox.warning(
@@ -1123,7 +1199,8 @@ class MainWindow(QMainWindow):
 
         self._op_status_lbl.setText(label)
         self._op_status_lbl.setStyleSheet(
-            f"color:{color};font-size:10px;font-weight:bold;border:none;"
+            f"color:{color};font-size:10px;font-weight:bold;"
+            f"font-family:'{T.MONO}';"
         )
         self._btn_reset_op.setVisible(status != OperationalStatus.NORMAL)
         self._update_status_buttons(status)
@@ -1133,12 +1210,13 @@ class MainWindow(QMainWindow):
         else:
             self._banner.setVisible(True)
             self._banner.setStyleSheet(
-                f"background:{T.rgba(banner_color, 40)};"
-                f"border-bottom:1px solid {banner_color};"
+                f"background:{T.rgba(banner_color, 35)};"
+                f"border-bottom:1px solid {T.rgba(banner_color, 120)};"
             )
             self._banner_lbl.setText(self._BANNER_TEXT[status])
             self._banner_lbl.setStyleSheet(
-                f"color:{banner_color};font-weight:bold;font-size:11px;border:none;"
+                f"color:{banner_color};font-weight:bold;font-size:10px;"
+                f"font-family:'{T.MONO}';letter-spacing:1px;"
             )
 
         print(f"[STATUS] Operasional: {label}")
@@ -1161,7 +1239,7 @@ class MainWindow(QMainWindow):
         self._kl_uid.setText(config.server.uid_2)
         self._off_ph.setText(f"{config.offsets.ph_offset:+.2f}")
         self._off_tss.setText(f"{config.offsets.tss_offset:+.2f} mg/L")
-        self._off_dbt.setText(f"{config.offsets.debit_offset:+.2f} m³/j")
+        self._off_dbt.setText(f"{config.offsets.debit_offset:+.2f} m3/j")
         self.refresh_cards()
 
     def refresh_cards(self):
