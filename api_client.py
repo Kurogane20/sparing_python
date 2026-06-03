@@ -8,9 +8,12 @@ import time
 import base64
 import hmac
 import hashlib
+from datetime import datetime
 from typing import Optional, Tuple
 import requests
 from requests.exceptions import RequestException, Timeout
+
+LOG_FILE = "transmission_log.txt"
 
 from config import config
 from models import SensorDataBuffer, BackupData, DataBackupManager
@@ -73,6 +76,25 @@ class APIClient:
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         })
+        self._log_callback = None
+
+    def set_log_callback(self, cb):
+        """Daftarkan callback untuk menampilkan log di GUI (dipanggil dari main thread)."""
+        self._log_callback = cb
+
+    def _write_log(self, line: str, short: str = ""):
+        """Tulis log ke file dan terminal; kirim versi ringkas ke GUI via callback."""
+        ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts_s  = datetime.now().strftime("%H:%M:%S")
+        entry = f"[{ts}] {line}"
+        print(entry)
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(entry + "\n")
+        except Exception:
+            pass
+        if self._log_callback:
+            self._log_callback(f"{ts_s}  {short or line[:55]}")
     
     def check_internet_connection(self) -> bool:
         """
@@ -173,23 +195,33 @@ class APIClient:
             
             if response.status_code == 200:
                 try:
-                    body = response.json()
-                    rows = body.get("rows", "?")
-                    msg  = body.get("message", "OK")
-                    print(f"[INFO] Terkirim ke {server_url} — {msg} ({rows} rows)")
+                    body   = response.json()
+                    rows   = body.get("rows", "?")
+                    msg    = body.get("message", "OK")
+                    uid    = body.get("uid", "-")
+                    dev_id = body.get("device_id", "-")
+                    self._write_log(
+                        f"KIRIM OK  | {server_url} | rows={rows} | uid={uid} | device_id={dev_id} | msg={msg}",
+                        short=f"OK  rows={rows}  uid={uid}"
+                    )
                 except Exception:
-                    print(f"[INFO] Terkirim ke {server_url} — {response.text[:100]}")
+                    self._write_log(
+                        f"KIRIM OK  | {server_url} | raw={response.text[:120]}",
+                        short=f"OK  {response.text[:40]}"
+                    )
                 return True
             else:
-                print(f"[ERROR] Gagal kirim data. HTTP: {response.status_code}")
-                print(f"[ERROR] Response: {response.text[:200]}")
+                self._write_log(
+                    f"KIRIM GAGAL | {server_url} | HTTP {response.status_code} | {response.text[:150]}",
+                    short=f"GAGAL  HTTP {response.status_code}"
+                )
                 return False
-                
+
         except Timeout:
-            print(f"[ERROR] Timeout mengirim data ke {server_url}")
+            self._write_log(f"KIRIM GAGAL | {server_url} | TIMEOUT", short="GAGAL  TIMEOUT")
             return False
         except RequestException as e:
-            print(f"[ERROR] Request error: {e}")
+            self._write_log(f"KIRIM GAGAL | {server_url} | {e}", short=f"GAGAL  {str(e)[:40]}")
             return False
     
     def send_all_data(self, data_buffer: SensorDataBuffer) -> Tuple[bool, bool]:

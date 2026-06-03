@@ -43,6 +43,9 @@ class AQMSWorker:
 
         self.sensor_reader = create_sensor_reader(use_dummy_sensor)
         self.api_client = APIClient()
+        self.api_client.set_log_callback(
+            lambda msg: signal_bridge.log_entry.emit(msg)
+        )
         self.data_buffer = SensorDataBuffer()
 
         self.running = False

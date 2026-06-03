@@ -14,6 +14,7 @@ env/
 error_log.txt
 data_backup.json
 config.json
+transmission_log.txt
 
 # IDE / OS
 .vscode/

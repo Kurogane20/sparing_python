@@ -113,6 +113,7 @@ class SignalBridge(QObject):
     data_count_update = pyqtSignal(int, int)
     daily_data_update = pyqtSignal(int)
     status_update     = pyqtSignal(int)
+    log_entry         = pyqtSignal(str)
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -578,6 +579,7 @@ class MainWindow(QMainWindow):
         self.signal_bridge.data_count_update.connect(self._on_count)
         self.signal_bridge.daily_data_update.connect(self._on_daily)
         self.signal_bridge.status_update.connect(self._on_status_update)
+        self.signal_bridge.log_entry.connect(self._on_log_entry)
 
         cw = QWidget()
         cw.setStyleSheet(f"background:{T.BG};")
@@ -964,6 +966,21 @@ class MainWindow(QMainWindow):
 
         # Sistem RPi (voltage) dipindahkan ke header chip — tidak ada seksi terpisah
 
+        # ── LOG PENGIRIMAN ──
+        s_log = Section("Log Pengiriman", color=T.BLUE)
+        self._log_labels: list = []
+        for _ in range(5):
+            lbl = QLabel("–")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color:{T.FG3};font-size:9px;"
+                f"font-family:'{T.MONO}';"
+            )
+            s_log.add(lbl)
+            self._log_labels.append(lbl)
+        self._log_entries: list = []
+        vb.addWidget(s_log)
+
         vb.addStretch()
 
         # Sidebar lebar tetap 228px — kartu sensor mendapat ruang lebih
@@ -1158,6 +1175,28 @@ class MainWindow(QMainWindow):
 
     def _on_daily(self, n):
         self._f_sent.setText(f"{n} data")
+
+    def _on_log_entry(self, entry: str):
+        """Tambah entri log pengiriman ke sidebar (maks 5, terbaru di atas)."""
+        self._log_entries.insert(0, entry)
+        if len(self._log_entries) > 5:
+            self._log_entries.pop()
+        for i, lbl in enumerate(self._log_labels):
+            if i < len(self._log_entries):
+                text = self._log_entries[i]
+                # Warnai merah jika GAGAL
+                col = T.ERR if "GAGAL" in text else T.OK
+                lbl.setText(text)
+                lbl.setStyleSheet(
+                    f"color:{col};font-size:9px;"
+                    f"font-family:'{T.MONO}';"
+                )
+            else:
+                lbl.setText("–")
+                lbl.setStyleSheet(
+                    f"color:{T.FG3};font-size:9px;"
+                    f"font-family:'{T.MONO}';"
+                )
 
     def _check_alarms(self, d: SensorData):
         msgs = []
