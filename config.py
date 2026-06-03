@@ -47,6 +47,7 @@ class ModbusConfig:
     ph_slave_id: int = 2
     tss_slave_id: int = 10
     debit_slave_id: int = 1
+    cod_slave_id: int = 5       # Slave ID sensor COD (sesuai manual, ubah jika berbeda)
 
     # Tipe sensor debit:
     #   False = saluran terbuka (open channel)  → 64-bit double, reg 15-18

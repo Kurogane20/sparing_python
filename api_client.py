@@ -87,49 +87,48 @@ class APIClient:
         except Exception:
             return False
     
-    def fetch_secret_key(self, url: str) -> Tuple[str, bool]:
+    def fetch_secret_key(self, url: str, uid: str = "") -> Tuple[str, bool]:
         """
-        Ambil secret key dari server
-        Args:
-            url: URL endpoint secret key
-        Returns:
-            (secret_key, sukses)
+        Ambil secret key dari server.
+        Spec Server 1: GET /api/get-key?uid=SITE_UID
         """
         try:
-            response = self._session.get(url, timeout=10)
-            
+            params = {"uid": uid} if uid else {}
+            response = self._session.get(url, params=params, timeout=10)
+
             if response.status_code == 200:
                 secret_key = response.text.strip()
-                print(f"[INFO] Secret key berhasil diambil dari {url}")
+                print(f"[INFO] Secret key berhasil diambil (uid={uid})")
                 return secret_key, True
             else:
                 print(f"[ERROR] Gagal mengambil secret key. HTTP: {response.status_code}")
                 return "", False
-                
+
         except Timeout:
             print(f"[ERROR] Timeout mengambil secret key dari {url}")
             return "", False
         except RequestException as e:
             print(f"[ERROR] Request error: {e}")
             return "", False
-    
+
     def fetch_all_secret_keys(self) -> bool:
         """
-        Ambil semua secret key dari kedua server
+        Ambil semua secret key dari kedua server.
+        UID dikirim sebagai query parameter sesuai spesifikasi.
         Returns: True jika minimal satu berhasil
         """
         success = False
-        
-        # Server 1
-        key1, ok1 = self.fetch_secret_key(config.server.secret_key_url_1)
+
+        # Server 1 — GET /api/get-key?uid=uid_1
+        key1, ok1 = self.fetch_secret_key(config.server.secret_key_url_1, config.server.uid_1)
         if ok1:
             self.secret_key_1 = key1
             success = True
         else:
             self.secret_key_1 = "sparing1"  # Default
             print("[WARN] Menggunakan secret key default untuk server 1")
-        
-        # Server 2
+
+        # Server 2 — spec belum tersedia, uid tidak dikirim
         key2, ok2 = self.fetch_secret_key(config.server.secret_key_url_2)
         if ok2:
             self.secret_key_2 = key2
@@ -137,7 +136,7 @@ class APIClient:
         else:
             self.secret_key_2 = "sparing2"  # Default
             print("[WARN] Menggunakan secret key default untuk server 2")
-        
+
         return success
     
     def create_jwt_token(self, uid: str, secret_key: str, 
@@ -173,8 +172,13 @@ class APIClient:
             )
             
             if response.status_code == 200:
-                print(f"[INFO] Data berhasil dikirim ke {server_url}")
-                print(f"[INFO] Response: {response.text[:200]}")
+                try:
+                    body = response.json()
+                    rows = body.get("rows", "?")
+                    msg  = body.get("message", "OK")
+                    print(f"[INFO] Terkirim ke {server_url} — {msg} ({rows} rows)")
+                except Exception:
+                    print(f"[INFO] Terkirim ke {server_url} — {response.text[:100]}")
                 return True
             else:
                 print(f"[ERROR] Gagal kirim data. HTTP: {response.status_code}")
@@ -301,13 +305,11 @@ class APIClient:
     
     def check_and_update_secret_keys(self):
         """Cek dan update secret key jika berubah"""
-        # Server 1
-        new_key1, ok1 = self.fetch_secret_key(config.server.secret_key_url_1)
+        new_key1, ok1 = self.fetch_secret_key(config.server.secret_key_url_1, config.server.uid_1)
         if ok1 and new_key1 != self.secret_key_1:
             print("[INFO] Secret key server 1 diperbarui")
             self.secret_key_1 = new_key1
-        
-        # Server 2
+
         new_key2, ok2 = self.fetch_secret_key(config.server.secret_key_url_2)
         if ok2 and new_key2 != self.secret_key_2:
             print("[INFO] Secret key server 2 diperbarui")

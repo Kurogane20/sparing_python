@@ -145,6 +145,39 @@ class ModbusSensorReader:
             print(f"[ERROR] Exception membaca TSS: {e}")
             return config.offsets.tss_offset, False
 
+    def read_cod(self) -> Tuple[float, bool]:
+        """
+        Baca sensor COD (Spectroscopic Organic Material Online Sensor)
+        Register: Address 0, 2 register, Float CDAB (word-swapped)
+
+        Contoh dari manual:
+          Request:  01 03 00 00 00 02 C4 0B
+          Response: 01 03 04 00 00 40 E0 CA 7B
+          Data bytes: 00 00 40 E0
+            register[0] = 0x0000  → low word
+            register[1] = 0x40E0  → high word
+          combined = (0x40E0 << 16) | 0x0000 = 0x40E00000 = 7.0 (IEEE 754)
+        """
+        if not self.connected or not self.client:
+            return 0.0, False
+
+        try:
+            result = _read_regs(self.client, 0, 2, config.modbus.cod_slave_id)
+
+            if result.isError():
+                print(f"[ERROR] Gagal membaca sensor COD: {result}")
+                return 0.0, False
+
+            high_word = result.registers[1]   # high word di index 1
+            low_word  = result.registers[0]   # low word di index 0
+            combined  = (high_word << 16) | low_word
+            cod_value = struct.unpack('f', struct.pack('I', combined))[0]
+            return round(cod_value, 2), True
+
+        except Exception as e:
+            print(f"[ERROR] Exception membaca COD: {e}")
+            return 0.0, False
+
     def read_debit(self) -> Tuple[float, bool]:
         """Dispatch ke metode baca sesuai tipe sensor debit di config."""
         if config.modbus.debit_closed_channel:
@@ -233,9 +266,16 @@ class ModbusSensorReader:
         debit_type = "closed" if config.modbus.debit_closed_channel else "open"
         status_debit = f"OK ({debit:.2f} m3/jam) [{debit_type}]" if debit_ok else "GAGAL"
         print(f"[MODBUS] Debit (Slave {config.modbus.debit_slave_id:>2}) -> {status_debit}")
+        time.sleep(0.1)
 
-        total_ok = sum([ph_ok, tss_ok, debit_ok])
-        print(f"[MODBUS] Hasil: {total_ok}/3 sensor berhasil dibaca")
+        # Baca COD
+        cod, cod_ok = self.read_cod()
+        sensor_data.cod = cod
+        status_cod = f"OK ({cod:.2f} mg/L)" if cod_ok else "GAGAL"
+        print(f"[MODBUS] COD   (Slave {config.modbus.cod_slave_id:>2}) -> {status_cod}")
+
+        total_ok = sum([ph_ok, tss_ok, debit_ok, cod_ok])
+        print(f"[MODBUS] Hasil: {total_ok}/4 sensor berhasil dibaca")
 
         return sensor_data
 
@@ -289,17 +329,19 @@ class DummySensorReader:
 
         sensor_data = SensorData()
         sensor_data.timestamp = int(time.time())
-        sensor_data.ph = round(6.5 + random.uniform(-0.5, 0.5), 2)
-        sensor_data.tss = round(50 + random.uniform(-10, 10), 2)
-        sensor_data.debit = round(100 + random.uniform(-20, 20), 2)
+        sensor_data.ph    = round(6.5  + random.uniform(-0.5, 0.5),   2)
+        sensor_data.tss   = round(50   + random.uniform(-10,  10),    2)
+        sensor_data.debit = round(100  + random.uniform(-20,  20),    2)
+        sensor_data.cod   = round(80   + random.uniform(-20,  20),    2)
         sensor_data.current = round(2.5 + random.uniform(-0.5, 0.5), 2)
-        sensor_data.voltage = round(12 + random.uniform(-0.5, 0.5), 2)
+        sensor_data.voltage = round(12  + random.uniform(-0.5, 0.5), 2)
 
         print(f"[MODBUS] Port: {config.modbus.port} | Baud: {config.modbus.baudrate} (DUMMY)")
         print(f"[MODBUS] pH    (Slave {config.modbus.ph_slave_id:>2}) -> OK ({sensor_data.ph:.2f}) [SIMULASI]")
         print(f"[MODBUS] TSS   (Slave {config.modbus.tss_slave_id:>2}) -> OK ({sensor_data.tss:.2f} mg/L) [SIMULASI]")
         print(f"[MODBUS] Debit (Slave {config.modbus.debit_slave_id:>2}) -> OK ({sensor_data.debit:.2f} m3/jam) [SIMULASI]")
-        print(f"[MODBUS] Hasil: 3/3 sensor berhasil dibaca [SIMULASI]")
+        print(f"[MODBUS] COD   (Slave {config.modbus.cod_slave_id:>2}) -> OK ({sensor_data.cod:.2f} mg/L) [SIMULASI]")
+        print(f"[MODBUS] Hasil: 4/4 sensor berhasil dibaca [SIMULASI]")
 
         return sensor_data
 
