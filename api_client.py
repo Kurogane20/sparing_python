@@ -8,6 +8,7 @@ import time
 import base64
 import hmac
 import hashlib
+import socket
 from datetime import datetime
 from typing import Optional, Tuple
 import requests
@@ -97,11 +98,14 @@ class APIClient:
             self._log_callback(f"{ts_s}  {short or line[:55]}")
     
     def check_internet_connection(self) -> bool:
-        """Cek koneksi internet via google.com."""
+        """
+        Cek koneksi internet via TCP ke DNS Google (8.8.8.8:53).
+        Tidak menggunakan HTTP/HTTPS — bebas dari masalah SSL dan redirect.
+        """
         try:
-            self._session.get("http://www.google.com", timeout=5)
+            socket.create_connection(("8.8.8.8", 53), timeout=5)
             return True
-        except Exception:
+        except OSError:
             return False
     
     def fetch_secret_key(self, url: str, uid: str = "") -> Tuple[str, bool]:
