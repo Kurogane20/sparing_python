@@ -54,7 +54,7 @@ class AQMSWorker:
         self._last_sensor_read = 0
         self._last_connection_check = 0
         self._secret_key_fetched = False
-        self._internet_connected = False
+        self._internet_connected = None  # None = belum pernah dicek
         self.daily_sent_count = 0
 
     def start(self):

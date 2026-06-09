@@ -97,15 +97,10 @@ class APIClient:
             self._log_callback(f"{ts_s}  {short or line[:55]}")
     
     def check_internet_connection(self) -> bool:
-        """
-        Cek koneksi internet
-        """
+        """Cek koneksi internet via google.com."""
         try:
-            response = self._session.get(
-                config.network.connection_check_url,
-                timeout=5
-            )
-            return response.status_code == 200
+            self._session.get("http://www.google.com", timeout=5)
+            return True
         except Exception:
             return False
     
