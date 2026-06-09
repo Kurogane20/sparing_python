@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QFormLayout, QGroupBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath, QLinearGradient
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath, QLinearGradient, QBrush
 
 from config import config
 from models import SensorData, OperationalStatus, OperationalState
@@ -129,29 +129,37 @@ class Spark(QWidget):
         self.pts.pop(0); self.pts.append(v); self.update()
 
     def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        mn, mx = min(self.pts), max(self.pts)
-        rng = mx - mn if mx != mn else 1.0
-        step = w / (len(self.pts) - 1)
-        pts = [QPoint(int(i * step), int(h - (v - mn) / rng * (h - 4) - 2))
-               for i, v in enumerate(self.pts)]
-        path = QPainterPath()
-        path.moveTo(pts[0].x(), pts[0].y())
-        for i in range(len(pts) - 1):
-            cx = (pts[i].x() + pts[i+1].x()) // 2
-            path.cubicTo(cx, pts[i].y(), cx, pts[i+1].y(),
-                         pts[i+1].x(), pts[i+1].y())
-        fill = QPainterPath(path)
-        fill.lineTo(w, h); fill.lineTo(0, h); fill.closeSubpath()
-        g = QLinearGradient(0, 0, 0, h)
-        c = self.clr
-        g.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 38))
-        g.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0))
-        p.fillPath(fill, g)
-        p.setPen(QPen(self.clr, 1.2))
-        p.drawPath(path)
+        try:
+            w, h = self.width(), self.height()
+            if w <= 0 or h <= 0:
+                return
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            mn, mx = min(self.pts), max(self.pts)
+            rng = mx - mn if mx != mn else 1.0
+            step = w / (len(self.pts) - 1)
+            pts = [QPoint(int(i * step), int(h - (v - mn) / rng * (h - 4) - 2))
+                   for i, v in enumerate(self.pts)]
+            path = QPainterPath()
+            path.moveTo(float(pts[0].x()), float(pts[0].y()))
+            for i in range(len(pts) - 1):
+                cx = float((pts[i].x() + pts[i+1].x()) / 2)
+                path.cubicTo(cx, float(pts[i].y()), cx, float(pts[i+1].y()),
+                             float(pts[i+1].x()), float(pts[i+1].y()))
+            fill = QPainterPath(path)
+            fill.lineTo(float(w), float(h))
+            fill.lineTo(0.0, float(h))
+            fill.closeSubpath()
+            g = QLinearGradient(0, 0, 0, h)
+            c = self.clr
+            g.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), 38))
+            g.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0))
+            p.fillPath(fill, QBrush(g))
+            p.setPen(QPen(self.clr, 1.2))
+            p.drawPath(path)
+            p.end()
+        except Exception as e:
+            print(f"[WARN] Spark.paintEvent error: {e}")
 
 # ── Status Tag ────────────────────────────────────────────────
 
