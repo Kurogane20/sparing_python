@@ -49,6 +49,11 @@ class ModbusConfig:
     debit_slave_id: int = 1
     cod_slave_id: int = 5       # Slave ID sensor COD (sesuai manual, ubah jika berbeda)
 
+    # Format baca COD:
+    #   False = Float CDAB (32-bit word-swap, sesuai manual spektroskopi)
+    #   True  = Integer/10 (reg[0] / 10.0, format Arduino ModbusMaster)
+    cod_integer_mode: bool = False
+
     # Tipe sensor debit:
     #   False = saluran terbuka (open channel)  → 64-bit double, reg 15-18
     #   True  = saluran tertutup (closed channel) → 32-bit float, reg 0-1

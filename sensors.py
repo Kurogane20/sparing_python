@@ -146,36 +146,51 @@ class ModbusSensorReader:
             return config.offsets.tss_offset, False
 
     def read_cod(self) -> Tuple[float, bool]:
-        """
-        Baca sensor COD (Spectroscopic Organic Material Online Sensor)
-        Register: Address 0, 2 register, Float CDAB (word-swapped)
+        """Dispatch ke metode baca sesuai format COD di config."""
+        if config.modbus.cod_integer_mode:
+            return self._read_cod_integer()
+        return self._read_cod_float()
 
-        Contoh dari manual:
-          Request:  01 03 00 00 00 02 C4 0B
-          Response: 01 03 04 00 00 40 E0 CA 7B
-          Data bytes: 00 00 40 E0
-            register[0] = 0x0000  → low word
-            register[1] = 0x40E0  → high word
-          combined = (0x40E0 << 16) | 0x0000 = 0x40E00000 = 7.0 (IEEE 754)
+    def _read_cod_integer(self) -> Tuple[float, bool]:
+        """
+        Format Integer/10 — kompatibel dengan Arduino ModbusMaster:
+          reg[0] berisi nilai integer, dibagi 10.0 → float
+          Contoh: reg[0] = 982 → COD = 98.2 mg/L
         """
         if not self.connected or not self.client:
             return 0.0, False
-
         try:
             result = _read_regs(self.client, 0, 2, config.modbus.cod_slave_id)
-
             if result.isError():
-                print(f"[ERROR] Gagal membaca sensor COD: {result}")
+                print(f"[ERROR] Gagal membaca sensor COD (integer): {result}")
                 return 0.0, False
+            cod_value = result.registers[0] / 10.0
+            return round(cod_value, 2), True
+        except Exception as e:
+            print(f"[ERROR] Exception membaca COD (integer): {e}")
+            return 0.0, False
 
-            high_word = result.registers[1]   # high word di index 1
-            low_word  = result.registers[0]   # low word di index 0
+    def _read_cod_float(self) -> Tuple[float, bool]:
+        """
+        Format Float CDAB (Spectroscopic Organic Material Online Sensor):
+          register[0] = low word, register[1] = high word
+          combined = (register[1] << 16) | register[0] → IEEE 754 float
+          Contoh: reg[1]=0x40E0, reg[0]=0x0000 → 7.0
+        """
+        if not self.connected or not self.client:
+            return 0.0, False
+        try:
+            result = _read_regs(self.client, 0, 2, config.modbus.cod_slave_id)
+            if result.isError():
+                print(f"[ERROR] Gagal membaca sensor COD (float): {result}")
+                return 0.0, False
+            high_word = result.registers[1]
+            low_word  = result.registers[0]
             combined  = (high_word << 16) | low_word
             cod_value = struct.unpack('f', struct.pack('I', combined))[0]
             return round(cod_value, 2), True
-
         except Exception as e:
-            print(f"[ERROR] Exception membaca COD: {e}")
+            print(f"[ERROR] Exception membaca COD (float): {e}")
             return 0.0, False
 
     def read_debit(self) -> Tuple[float, bool]:

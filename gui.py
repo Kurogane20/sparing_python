@@ -480,6 +480,16 @@ class SettingsDialog(QDialog):
         g2vb.addWidget(self._cb_closed); g2vb.addWidget(desc_closed)
         vb.addWidget(g2)
 
+        g3 = QGroupBox("Konfigurasi Sensor COD")
+        g3vb = QVBoxLayout(g3); g3vb.setSpacing(6); g3vb.setContentsMargins(10,16,10,10)
+        self._cb_cod_int = QCheckBox("Integer/10 (Arduino ModbusMaster)")
+        self._cb_cod_int.setChecked(config.modbus.cod_integer_mode)
+        self._cb_cod_int.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        desc_cod = QLabel("Centang: reg[0]/10.0  |  Kosong: Float CDAB reg[1]<<16|reg[0]")
+        desc_cod.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_cod.setWordWrap(True)
+        g3vb.addWidget(self._cb_cod_int); g3vb.addWidget(desc_cod)
+        vb.addWidget(g3)
+
         note = QLabel("Min. 1 parameter harus aktif.")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
         vb.addWidget(note); vb.addStretch(); return w
@@ -531,6 +541,7 @@ class SettingsDialog(QDialog):
             if selected:
                 config.display_sensors = selected
             config.modbus.debit_closed_channel = self._cb_closed.isChecked()
+            config.modbus.cod_integer_mode     = self._cb_cod_int.isChecked()
             config.save()
         except Exception as e:
             QMessageBox.critical(self, "Gagal Menyimpan", str(e))
