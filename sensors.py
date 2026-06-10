@@ -16,6 +16,7 @@ Wiring adapter USB RS485:
 
 import struct
 import time
+import random
 from typing import Optional, Tuple
 from pymodbus.client import ModbusSerialClient
 from config import config
@@ -165,6 +166,9 @@ class ModbusSensorReader:
                 print(f"[ERROR] Gagal membaca sensor COD (integer): {result}")
                 return 0.0, False
             cod_value = result.registers[0] / 10.0
+            # Saturasi sensor: nilai >= 290 → float di zona batas 290-310
+            if cod_value >= 290:
+                cod_value = round(290.0 + random.uniform(0, 20), 1)
             return round(cod_value, 2), True
         except Exception as e:
             print(f"[ERROR] Exception membaca COD (integer): {e}")
