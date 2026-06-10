@@ -136,6 +136,11 @@ class AQMSWorker:
         if self.api_client.fetch_all_secret_keys():
             self._secret_key_fetched = True
             self.signal_bridge.notification.emit("Secret key berhasil diambil", 3000)
+            k1 = self.api_client.secret_key_1
+            k2 = self.api_client.secret_key_2
+            p1 = (k1[:8] + "...") if len(k1) > 8 else k1
+            p2 = (k2[:8] + "...") if len(k2) > 8 else k2
+            self.signal_bridge.secret_key_update.emit(p1, p2)
         else:
             self.signal_bridge.notification.emit("Gagal ambil secret key", 3000)
 

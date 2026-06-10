@@ -114,6 +114,7 @@ class SignalBridge(QObject):
     daily_data_update = pyqtSignal(int)
     status_update     = pyqtSignal(int)
     log_entry         = pyqtSignal(str)
+    secret_key_update = pyqtSignal(str, str)   # (preview_key1, preview_key2)
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -599,6 +600,7 @@ class MainWindow(QMainWindow):
         self.signal_bridge.daily_data_update.connect(self._on_daily)
         self.signal_bridge.status_update.connect(self._on_status_update)
         self.signal_bridge.log_entry.connect(self._on_log_entry)
+        self.signal_bridge.secret_key_update.connect(self._on_secret_key)
 
         cw = QWidget()
         cw.setStyleSheet(f"background:{T.BG};")
@@ -946,11 +948,13 @@ class MainWindow(QMainWindow):
         s_kl = Section("Server KLHK", color=T.BLUE)
         self._kl_conn = s_kl.row("Koneksi", "MEMERIKSA", T.FG2)
         self._kl_uid  = s_kl.row("UID", config.server.uid_2)
+        self._kl_key  = s_kl.row("Secret Key", "–", T.FG3)
         vb.addWidget(s_kl)
 
         # ── 5. SERVER MITRA MUTIARA ──
         s_mm = Section("Server Mitra Mutiara", color=T.BLUE)
         self._mm_conn = s_mm.row("Koneksi", "MEMERIKSA", T.FG2)
+        self._mm_key  = s_mm.row("Secret Key", "–", T.FG3)
         vb.addWidget(s_mm)
 
         # ── 6. MODBUS RS485 ──
@@ -1216,6 +1220,17 @@ class MainWindow(QMainWindow):
                     f"color:{T.FG3};font-size:9px;"
                     f"font-family:'{T.MONO}';"
                 )
+
+    def _on_secret_key(self, preview1: str, preview2: str):
+        """Tampilkan preview secret key di sidebar setelah berhasil diambil."""
+        def _set(lbl, preview):
+            lbl.setText(preview if preview else "–")
+            col = T.OK if preview and preview != "–" else T.FG3
+            lbl.setStyleSheet(
+                f"color:{col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
+            )
+        _set(self._mm_key, preview1)
+        _set(self._kl_key, preview2)
 
     def _check_alarms(self, d: SensorData):
         msgs = []
