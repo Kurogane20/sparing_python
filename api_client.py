@@ -40,8 +40,8 @@ class JWTEncoder:
         Returns:
             JWT token string
         """
-        # Header
-        header = {"alg": "HS256", "typ": "JWT"}
+        # Header — urutan typ dulu sesuai spek SPARING
+        header = {"typ": "JWT", "alg": "HS256"}
         header_encoded = JWTEncoder.base64url_encode(
             json.dumps(header, separators=(',', ':')).encode('utf-8')
         )
@@ -118,11 +118,23 @@ class APIClient:
             response = self._session.get(url, params=params, timeout=10)
 
             if response.status_code == 200:
-                secret_key = response.text.strip()
-                print(f"[INFO] Secret key berhasil diambil (uid={uid})")
+                raw = response.text.strip()
+                # Tangani jika server mengembalikan JSON
+                try:
+                    data = json.loads(raw)
+                    if isinstance(data, str):
+                        secret_key = data
+                    elif isinstance(data, dict):
+                        secret_key = data.get("secret") or data.get("key") or data.get("data") or raw
+                    else:
+                        secret_key = raw
+                except (json.JSONDecodeError, ValueError):
+                    secret_key = raw
+                preview = secret_key[:6] + "..." if len(secret_key) > 6 else secret_key
+                print(f"[INFO] Secret key berhasil diambil (uid={uid}): '{preview}' len={len(secret_key)}")
                 return secret_key, True
             else:
-                print(f"[ERROR] Gagal mengambil secret key. HTTP: {response.status_code}")
+                print(f"[ERROR] Gagal mengambil secret key. HTTP: {response.status_code} | {response.text[:80]}")
                 return "", False
 
         except Timeout:
@@ -194,21 +206,40 @@ class APIClient:
             
             if response.status_code == 200:
                 try:
-                    body   = response.json()
-                    rows   = body.get("rows", "?")
-                    msg    = body.get("message", "OK")
-                    uid    = body.get("uid", "-")
-                    dev_id = body.get("device_id", "-")
-                    self._write_log(
-                        f"KIRIM OK  | {server_url} | rows={rows} | uid={uid} | device_id={dev_id} | msg={msg}",
-                        short=f"OK  rows={rows}  uid={uid}"
-                    )
+                    body = response.json()
+                    # Server 1 (Mitra Mutiara): {"rows":N, "message":"...", "uid":"...", "device_id":"..."}
+                    # Server 2 (KLHK):          {"status":true/false, "desc":null/"..."}
+                    if "status" in body:
+                        ok   = body.get("status", False)
+                        desc = body.get("desc") or "OK"
+                        if ok:
+                            self._write_log(
+                                f"KIRIM OK  | {server_url} | {desc}",
+                                short=f"OK  {server_url.split('/')[2]}"
+                            )
+                            return True
+                        else:
+                            self._write_log(
+                                f"KIRIM GAGAL | {server_url} | HTTP 200 status=false | {desc}",
+                                short=f"GAGAL  {str(desc)[:35]}"
+                            )
+                            return False
+                    else:
+                        rows   = body.get("rows", "?")
+                        msg    = body.get("message", "OK")
+                        uid    = body.get("uid", "-")
+                        dev_id = body.get("device_id", "-")
+                        self._write_log(
+                            f"KIRIM OK  | {server_url} | rows={rows} | uid={uid} | device_id={dev_id} | msg={msg}",
+                            short=f"OK  rows={rows}  uid={uid}"
+                        )
+                        return True
                 except Exception:
                     self._write_log(
                         f"KIRIM OK  | {server_url} | raw={response.text[:120]}",
                         short=f"OK  {response.text[:40]}"
                     )
-                return True
+                    return True
             else:
                 self._write_log(
                     f"KIRIM GAGAL | {server_url} | HTTP {response.status_code} | {response.text[:150]}",

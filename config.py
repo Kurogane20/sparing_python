@@ -75,7 +75,7 @@ class NetworkConfig:
     """Konfigurasi jaringan"""
     ntp_server: str = "pool.ntp.org"
     connection_check_url: str = "http://www.google.com"
-    connection_check_interval: int = 5  # detik
+    connection_check_interval: int = 60  # detik
     wifi_ssid: str = ""
     wifi_password: str = ""
 
