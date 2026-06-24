@@ -92,7 +92,7 @@ class T:
     SENSORS = {
         "pH":    (CYAN,  "",      6.0, 9.0),
         "TSS":   (AMBER, "mg/L", 0,   200),
-        "DEBIT": (BLUE,  "m3/j", 0,   100),
+        "DEBIT": (BLUE,  "m3/m", 0,   100),
         "COD":   (RED,   "mg/L", 0,   300),
         "NH3-N": (GREEN, "mg/L", 0,   10),
     }
@@ -423,26 +423,26 @@ class SettingsDialog(QDialog):
 
     def _t_offset(self):
         w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
-        g = QGroupBox("Kalibrasi Offset Sensor")
+        g = QGroupBox("Faktor Kalibrasi Sensor")
         fm = QFormLayout(g); fm.setSpacing(8); fm.setContentsMargins(10,16,10,10)
 
         def spin(lo, hi, step, val, suffix):
             s = QDoubleSpinBox()
-            s.setRange(lo, hi); s.setDecimals(2)
+            s.setRange(lo, hi); s.setDecimals(3)
             s.setSingleStep(step); s.setValue(val); s.setSuffix(suffix)
             return s
 
-        self.s_ph  = spin(-14,  14,  0.01, config.offsets.ph_offset,   "  pH")
-        self.s_tss = spin(-999, 999, 0.1,  config.offsets.tss_offset,  "  mg/L")
-        self.s_dbt = spin(-999, 999, 0.1,  config.offsets.debit_offset, "  m3/j")
-        fm.addRow("Offset pH:", self.s_ph)
-        fm.addRow("Offset TSS:", self.s_tss)
-        fm.addRow("Offset Debit:", self.s_dbt)
+        self.s_ph  = spin(0.001, 10.0, 0.001, config.offsets.ph_factor,    "  ×")
+        self.s_tss = spin(0.001, 99.9, 0.001, config.offsets.tss_factor,   "  ×")
+        self.s_dbt = spin(0.001, 99.9, 0.001, config.offsets.debit_factor,  "  ×")
+        fm.addRow("Faktor pH:", self.s_ph)
+        fm.addRow("Faktor TSS:", self.s_tss)
+        fm.addRow("Faktor Debit:", self.s_dbt)
         vb.addWidget(g)
-        br = QPushButton("Reset Semua ke 0")
-        br.clicked.connect(lambda: [s.setValue(0) for s in [self.s_ph, self.s_tss, self.s_dbt]])
+        br = QPushButton("Reset Semua ke 1.0")
+        br.clicked.connect(lambda: [s.setValue(1.0) for s in [self.s_ph, self.s_tss, self.s_dbt]])
         vb.addWidget(br)
-        note = QLabel("pH: nilai+offset (maks 14)  |  TSS/Debit: nilai-offset")
+        note = QLabel("nilai × faktor  |  pH hasil di-clamp ke 0–14  |  Default: 1.0 (tanpa koreksi)")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
         vb.addWidget(note)
         vb.addStretch(); return w
@@ -535,9 +535,9 @@ class SettingsDialog(QDialog):
             config.server.secret_key_url_2 = self.e_sk.text().strip()
             config.network.wifi_ssid       = self.e_ssid.text().strip()
             config.network.wifi_password   = self.e_pass.text().strip()
-            config.offsets.ph_offset       = self.s_ph.value()
-            config.offsets.tss_offset      = self.s_tss.value()
-            config.offsets.debit_offset    = self.s_dbt.value()
+            config.offsets.ph_factor       = self.s_ph.value()
+            config.offsets.tss_factor      = self.s_tss.value()
+            config.offsets.debit_factor    = self.s_dbt.value()
             selected = [n for n, cb in self._param_checks.items() if cb.isChecked()]
             if selected:
                 config.display_sensors = selected
@@ -979,12 +979,11 @@ class MainWindow(QMainWindow):
         s_mb._vb.addLayout(led_row)
         vb.addWidget(s_mb)
 
-        # ── 7. OFFSET KALIBRASI ──
-        # Dipertahankan (informasi berguna tanpa buka Settings)
-        s_off = Section("Offset Kalibrasi")
-        self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_offset:+.2f}")
-        self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_offset:+.2f} mg/L")
-        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_offset:+.2f} m3/j")
+        # ── 7. FAKTOR KALIBRASI ──
+        s_off = Section("Faktor Kalibrasi")
+        self._off_ph  = s_off.row("pH",    f"{config.offsets.ph_factor:.3f} ×")
+        self._off_tss = s_off.row("TSS",   f"{config.offsets.tss_factor:.3f} ×")
+        self._off_dbt = s_off.row("Debit", f"{config.offsets.debit_factor:.3f} ×")
         vb.addWidget(s_off)
 
         # Sistem RPi (voltage) dipindahkan ke header chip — tidak ada seksi terpisah
@@ -1341,9 +1340,9 @@ class MainWindow(QMainWindow):
 
     def refresh_sidebar(self):
         self._kl_uid.setText(config.server.uid_2)
-        self._off_ph.setText(f"{config.offsets.ph_offset:+.2f}")
-        self._off_tss.setText(f"{config.offsets.tss_offset:+.2f} mg/L")
-        self._off_dbt.setText(f"{config.offsets.debit_offset:+.2f} m3/j")
+        self._off_ph.setText(f"{config.offsets.ph_factor:.3f} ×")
+        self._off_tss.setText(f"{config.offsets.tss_factor:.3f} ×")
+        self._off_dbt.setText(f"{config.offsets.debit_factor:.3f} ×")
         self.refresh_cards()
 
     def refresh_cards(self):

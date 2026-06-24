@@ -65,10 +65,10 @@ class ModbusConfig:
 
 @dataclass
 class SensorOffsets:
-    """Offset kalibrasi sensor"""
-    ph_offset: float = 0.0
-    tss_offset: float = 0.0
-    debit_offset: float = 0.0
+    """Faktor kalibrasi sensor (perkalian)"""
+    ph_factor: float = 1.0
+    tss_factor: float = 1.0
+    debit_factor: float = 1.0
 
 @dataclass
 class NetworkConfig:

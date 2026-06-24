@@ -109,7 +109,7 @@ class ModbusSensorReader:
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor pH: {result}")
-                return config.offsets.ph_offset, False
+                return 0.0, False
 
             ph_raw = result.registers[1] / 100.0
             ph_value = self._apply_ph_offset(ph_raw)
@@ -117,7 +117,7 @@ class ModbusSensorReader:
 
         except Exception as e:
             print(f"[ERROR] Exception membaca pH: {e}")
-            return config.offsets.ph_offset, False
+            return 0.0, False
 
     def read_tss(self) -> Tuple[float, bool]:
         """
@@ -133,7 +133,7 @@ class ModbusSensorReader:
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor TSS: {result}")
-                return config.offsets.tss_offset, False
+                return 0.0, False
 
             high_word = result.registers[3]
             low_word = result.registers[2]
@@ -144,7 +144,7 @@ class ModbusSensorReader:
 
         except Exception as e:
             print(f"[ERROR] Exception membaca TSS: {e}")
-            return config.offsets.tss_offset, False
+            return 0.0, False
 
     def read_cod(self) -> Tuple[float, bool]:
         """Dispatch ke metode baca sesuai format COD di config."""
@@ -224,7 +224,8 @@ class ModbusSensorReader:
             reg_d = result.registers[18]
             combined = (reg_a << 48) | (reg_b << 32) | (reg_c << 16) | reg_d
             debit_raw = struct.unpack('d', struct.pack('Q', combined))[0]
-            return self._apply_debit_offset(debit_raw), True
+            debit_m3m = debit_raw / 60.0  # konversi m³/h → m³/menit
+            return self._apply_debit_offset(debit_m3m), True
 
         except Exception as e:
             print(f"[ERROR] Exception membaca Debit (open): {e}")
@@ -299,14 +300,14 @@ class ModbusSensorReader:
         return sensor_data
 
     def _apply_ph_offset(self, value: float) -> float:
-        result = value + config.offsets.ph_offset
-        return min(result, 14.0)
+        result = value * config.offsets.ph_factor
+        return max(0.0, min(result, 14.0))
 
     def _apply_tss_offset(self, value: float) -> float:
-        return value - config.offsets.tss_offset
+        return value * config.offsets.tss_factor
 
     def _apply_debit_offset(self, value: float) -> float:
-        return value - config.offsets.debit_offset
+        return value * config.offsets.debit_factor
 
     @property
     def last_error(self) -> str:
