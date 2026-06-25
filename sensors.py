@@ -59,6 +59,15 @@ class ModbusSensorReader:
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
         self._last_error = ""
+        self._log_callback = None
+
+    def set_log_callback(self, cb):
+        self._log_callback = cb
+
+    def _log(self, msg: str):
+        print(msg)
+        if self._log_callback:
+            self._log_callback(msg)
 
     def connect(self) -> bool:
         """Hubungkan ke adapter USB RS485"""
@@ -75,17 +84,16 @@ class ModbusSensorReader:
             self.connected = self.client.connect()
 
             if self.connected:
-                print(f"[INFO] Terhubung ke Modbus RS485 via USB: {config.modbus.port}")
+                self._log(f"[MODBUS] Terhubung: {config.modbus.port} | {config.modbus.baudrate} baud")
             else:
                 self._last_error = f"Gagal terhubung ke {config.modbus.port}"
-                print(f"[ERROR] {self._last_error}")
-                print(f"[INFO] Cek: ls /dev/ttyUSB* atau pastikan adapter terpasang")
+                self._log(f"[MODBUS] GAGAL terhubung: {config.modbus.port}")
 
             return self.connected
 
         except Exception as e:
             self._last_error = str(e)
-            print(f"[ERROR] Koneksi Modbus gagal: {e}")
+            self._log(f"[MODBUS] ERROR koneksi: {e}")
             self.connected = False
             return False
 
@@ -94,7 +102,7 @@ class ModbusSensorReader:
         if self.client:
             self.client.close()
             self.connected = False
-            print("[INFO] Koneksi Modbus ditutup")
+            self._log("[MODBUS] Koneksi ditutup")
 
     def read_ph(self) -> Tuple[float, bool]:
         """
@@ -263,38 +271,38 @@ class ModbusSensorReader:
         sensor_data = SensorData()
         sensor_data.timestamp = int(time.time())
 
-        print(f"[MODBUS] Port: {config.modbus.port} | Baud: {config.modbus.baudrate}")
+        self._log(f"[MODBUS] Baca sensor | {config.modbus.port} | {config.modbus.baudrate} baud")
 
         # Baca pH
         ph, ph_ok = self.read_ph()
         sensor_data.ph = ph
         status_ph = f"OK ({ph:.2f})" if ph_ok else "GAGAL"
-        print(f"[MODBUS] pH    (Slave {config.modbus.ph_slave_id:>2}) -> {status_ph}")
+        self._log(f"[MODBUS] pH    Slave {config.modbus.ph_slave_id:>2} → {status_ph}")
         time.sleep(0.1)
 
         # Baca TSS
         tss, tss_ok = self.read_tss()
         sensor_data.tss = tss
         status_tss = f"OK ({tss:.2f} mg/L)" if tss_ok else "GAGAL"
-        print(f"[MODBUS] TSS   (Slave {config.modbus.tss_slave_id:>2}) -> {status_tss}")
+        self._log(f"[MODBUS] TSS   Slave {config.modbus.tss_slave_id:>2} → {status_tss}")
         time.sleep(0.1)
 
         # Baca Debit
         debit, debit_ok = self.read_debit()
         sensor_data.debit = debit
         debit_type = "closed" if config.modbus.debit_closed_channel else "open"
-        status_debit = f"OK ({debit:.2f} m3/jam) [{debit_type}]" if debit_ok else "GAGAL"
-        print(f"[MODBUS] Debit (Slave {config.modbus.debit_slave_id:>2}) -> {status_debit}")
+        status_debit = f"OK ({debit:.2f} m3/m) [{debit_type}]" if debit_ok else "GAGAL"
+        self._log(f"[MODBUS] Debit Slave {config.modbus.debit_slave_id:>2} → {status_debit}")
         time.sleep(0.1)
 
         # Baca COD
         cod, cod_ok = self.read_cod()
         sensor_data.cod = cod
         status_cod = f"OK ({cod:.2f} mg/L)" if cod_ok else "GAGAL"
-        print(f"[MODBUS] COD   (Slave {config.modbus.cod_slave_id:>2}) -> {status_cod}")
+        self._log(f"[MODBUS] COD   Slave {config.modbus.cod_slave_id:>2} → {status_cod}")
 
         total_ok = sum([ph_ok, tss_ok, debit_ok, cod_ok])
-        print(f"[MODBUS] Hasil: {total_ok}/4 sensor berhasil dibaca")
+        self._log(f"[MODBUS] Selesai: {total_ok}/4 sensor berhasil dibaca")
 
         return sensor_data
 

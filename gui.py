@@ -115,6 +115,7 @@ class SignalBridge(QObject):
     status_update     = pyqtSignal(int)
     log_entry         = pyqtSignal(str)
     secret_key_update = pyqtSignal(str, str)   # (preview_key1, preview_key2)
+    modbus_log        = pyqtSignal(str)
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -601,6 +602,7 @@ class MainWindow(QMainWindow):
         self.signal_bridge.status_update.connect(self._on_status_update)
         self.signal_bridge.log_entry.connect(self._on_log_entry)
         self.signal_bridge.secret_key_update.connect(self._on_secret_key)
+        self.signal_bridge.modbus_log.connect(self._on_modbus_log)
 
         cw = QWidget()
         cw.setStyleSheet(f"background:{T.BG};")
@@ -977,6 +979,17 @@ class MainWindow(QMainWindow):
             led_row.addWidget(lb)
             self._leds[key] = lb
         s_mb._vb.addLayout(led_row)
+
+        self._mb_log_labels: list = []
+        for _ in range(4):
+            lbl = QLabel("–")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color:{T.FG3};font-size:9px;font-family:'{T.MONO}';"
+            )
+            s_mb.add(lbl)
+            self._mb_log_labels.append(lbl)
+        self._mb_log_entries: list = []
         vb.addWidget(s_mb)
 
         # ── 7. FAKTOR KALIBRASI ──
@@ -1218,6 +1231,25 @@ class MainWindow(QMainWindow):
                 lbl.setStyleSheet(
                     f"color:{T.FG3};font-size:9px;"
                     f"font-family:'{T.MONO}';"
+                )
+
+    def _on_modbus_log(self, entry: str):
+        """Tambah entri log modbus ke sidebar (maks 4, terbaru di atas)."""
+        self._mb_log_entries.insert(0, entry)
+        if len(self._mb_log_entries) > 4:
+            self._mb_log_entries.pop()
+        for i, lbl in enumerate(self._mb_log_labels):
+            if i < len(self._mb_log_entries):
+                text = self._mb_log_entries[i]
+                col = T.ERR if "GAGAL" in text or "ERROR" in text else T.FG3
+                lbl.setText(text)
+                lbl.setStyleSheet(
+                    f"color:{col};font-size:9px;font-family:'{T.MONO}';"
+                )
+            else:
+                lbl.setText("–")
+                lbl.setStyleSheet(
+                    f"color:{T.FG3};font-size:9px;font-family:'{T.MONO}';"
                 )
 
     def _on_secret_key(self, preview1: str, preview2: str):

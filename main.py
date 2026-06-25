@@ -42,6 +42,10 @@ class AQMSWorker:
         self.use_dummy_sensor = use_dummy_sensor
 
         self.sensor_reader = create_sensor_reader(use_dummy_sensor)
+        if hasattr(self.sensor_reader, 'set_log_callback'):
+            self.sensor_reader.set_log_callback(
+                lambda msg: signal_bridge.modbus_log.emit(msg)
+            )
         self.api_client = APIClient()
         self.api_client.set_log_callback(
             lambda msg: signal_bridge.log_entry.emit(msg)
