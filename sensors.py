@@ -166,8 +166,7 @@ class ModbusSensorReader:
                 print(f"[ERROR] Gagal membaca sensor COD (integer): {result}")
                 return 0.0, False
             cod_value = result.registers[0] / 10.0
-            # Saturasi sensor: nilai >= 290 → float di zona batas 290-310
-            if cod_value >= 290:
+            if cod_value >= 290:  # BATAS SEMENTARA: saturasi COD, float di zona 290-310
                 cod_value = round(290.0 + random.uniform(0, 20), 1)
             return round(cod_value, 2), True
         except Exception as e:
@@ -301,10 +300,11 @@ class ModbusSensorReader:
 
     def _apply_ph_offset(self, value: float) -> float:
         result = value * config.offsets.ph_factor
-        return max(0.0, min(result, 14.0))
+        return max(6.0, min(result, 9.0))  # BATAS SEMENTARA: clamp pH ke [6.0 – 9.0]
 
     def _apply_tss_offset(self, value: float) -> float:
-        return value * config.offsets.tss_factor
+        result = value * config.offsets.tss_factor
+        return min(result, 100.0)  # BATAS SEMENTARA: clamp TSS maks 100 mg/L
 
     def _apply_debit_offset(self, value: float) -> float:
         return value * config.offsets.debit_factor

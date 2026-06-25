@@ -91,7 +91,7 @@ class T:
 
     SENSORS = {
         "pH":    (CYAN,  "",      6.0, 9.0),
-        "TSS":   (AMBER, "mg/L", 0,   200),
+        "TSS":   (AMBER, "mg/L", 0,   100),
         "DEBIT": (BLUE,  "m3/m", 0,   100),
         "COD":   (RED,   "mg/L", 0,   300),
         "NH3-N": (GREEN, "mg/L", 0,   10),
@@ -1234,7 +1234,7 @@ class MainWindow(QMainWindow):
     def _check_alarms(self, d: SensorData):
         msgs = []
         if not (6 <= d.ph <= 9):   msgs.append(f"pH {d.ph:.2f} (batas 6-9)")
-        if d.tss  > 200:           msgs.append(f"TSS {d.tss:.1f} > 200 mg/L")
+        if d.tss  > 100:           msgs.append(f"TSS {d.tss:.1f} > 100 mg/L")
         if d.cod  > 300:           msgs.append(f"COD {d.cod:.1f} > 300 mg/L")
         if d.nh3n > 10:            msgs.append(f"NH3-N {d.nh3n:.1f} > 10 mg/L")
         n = len(msgs)
