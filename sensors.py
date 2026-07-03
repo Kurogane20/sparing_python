@@ -117,7 +117,7 @@ class ModbusSensorReader:
 
             if result.isError():
                 print(f"[ERROR] Gagal membaca sensor pH: {result}")
-                return 0.0, False
+                return round(random.uniform(6.0, 9.0), 2), False  # BATAS SEMENTARA: random jika gagal
 
             ph_raw = result.registers[1] / 100.0
             ph_value = self._apply_ph_offset(ph_raw)
@@ -125,7 +125,7 @@ class ModbusSensorReader:
 
         except Exception as e:
             print(f"[ERROR] Exception membaca pH: {e}")
-            return 0.0, False
+            return round(random.uniform(6.0, 9.0), 2), False  # BATAS SEMENTARA: random jika gagal
 
     def read_tss(self) -> Tuple[float, bool]:
         """
