@@ -15,6 +15,10 @@ error_log.txt
 data_backup.json
 config.json
 transmission_log.txt
+buffer_cache.json
+operational_status.json
+sensor_history.db
+transmission_log.txt.old
 
 # IDE / OS
 .vscode/

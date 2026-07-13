@@ -3,6 +3,7 @@ AQMS API Communication Module
 Modul untuk komunikasi dengan server API dan JWT
 """
 
+import os
 import json
 import time
 import base64
@@ -90,6 +91,10 @@ class APIClient:
         entry = f"[{ts}] {line}"
         print(entry)
         try:
+            # Rotasi log: maks 1 MB, simpan 1 file lama —
+            # cegah file tumbuh tanpa batas (umur SD card RPi)
+            if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
+                os.replace(LOG_FILE, LOG_FILE + ".old")
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(entry + "\n")
         except Exception:
@@ -254,6 +259,18 @@ class APIClient:
             self._write_log(f"KIRIM GAGAL | {server_url} | {e}", short=f"GAGAL  {str(e)[:40]}")
             return False
     
+    def _build_payloads(self, data_buffer: SensorDataBuffer) -> Tuple[dict, dict]:
+        """Buat payload mentah untuk kedua server."""
+        payload1 = data_buffer.get_payload(
+            config.server.uid_1, include_power=True,
+            device_id=config.server.device_id_1
+        )
+        payload2 = data_buffer.get_payload(config.server.uid_2, include_power=False)
+        return payload1, payload2
+
+    def _secret_for(self, server_num: int) -> str:
+        return self.secret_key_1 if server_num == 1 else self.secret_key_2
+
     def send_all_data(self, data_buffer: SensorDataBuffer) -> Tuple[bool, bool]:
         """
         Kirim data ke kedua server
@@ -262,108 +279,90 @@ class APIClient:
         Returns:
             (sukses_server1, sukses_server2)
         """
+        payload1, payload2 = self._build_payloads(data_buffer)
+
         # Cek koneksi internet
         if not self.check_internet_connection():
             print("[WARN] Tidak ada koneksi internet, menyimpan ke backup")
-            self._save_to_backup(data_buffer)
+            self._backup_payload(payload1, 1)
+            self._backup_payload(payload2, 2)
             return False, False
-        
+
         # Coba kirim data backup terlebih dahulu
         self._send_backup_data()
-        
-        # Buat JWT untuk server 1 (dengan power data dan device_id)
-        token1 = self.create_jwt_token(
-            config.server.uid_1,
-            self.secret_key_1,
-            data_buffer,
-            include_power=True,
-            device_id=config.server.device_id_1
-        )
-        
-        # Buat JWT untuk server 2 (tanpa power data)
-        token2 = self.create_jwt_token(
-            config.server.uid_2,
-            self.secret_key_2,
-            data_buffer,
-            include_power=False
-        )
-        
-        if not token1 or not token2:
-            print("[ERROR] Gagal membuat JWT token")
-            return False, False
-        
-        # Kirim ke kedua server
-        success1 = self.send_data(config.server.server_url_1, token1)
-        success2 = self.send_data(config.server.server_url_2, token2)
-        
-        # Simpan ke backup jika gagal
+
+        token1 = JWTEncoder.create_jwt(payload1, self.secret_key_1) if self.secret_key_1 else ""
+        token2 = JWTEncoder.create_jwt(payload2, self.secret_key_2) if self.secret_key_2 else ""
+
+        # Kirim ke kedua server (token kosong = gagal → masuk backup)
+        success1 = bool(token1) and self.send_data(config.server.server_url_1, token1)
+        success2 = bool(token2) and self.send_data(config.server.server_url_2, token2)
+
+        # Simpan payload mentah ke backup jika gagal —
+        # token dibuat ulang saat retry dengan key terkini
         if not success1:
-            self.backup_manager.add(BackupData(
-                token=token1,
-                server_url=config.server.server_url_1,
-                timestamp=int(time.time())
-            ))
-        
+            self._backup_payload(payload1, 1)
         if not success2:
-            self.backup_manager.add(BackupData(
-                token=token2,
-                server_url=config.server.server_url_2,
-                timestamp=int(time.time())
-            ))
-        
+            self._backup_payload(payload2, 2)
+
         return success1, success2
-    
-    def _save_to_backup(self, data_buffer: SensorDataBuffer):
-        """Simpan data ke backup file"""
-        token1 = self.create_jwt_token(
-            config.server.uid_1,
-            self.secret_key_1,
-            data_buffer,
-            include_power=True,
-            device_id=config.server.device_id_1
-        )
-        
-        token2 = self.create_jwt_token(
-            config.server.uid_2,
-            self.secret_key_2,
-            data_buffer,
-            include_power=False
-        )
-        
-        if token1:
-            self.backup_manager.add(BackupData(
-                token=token1,
-                server_url=config.server.server_url_1,
-                timestamp=int(time.time())
-            ))
-        
-        if token2:
-            self.backup_manager.add(BackupData(
-                token=token2,
-                server_url=config.server.server_url_2,
-                timestamp=int(time.time())
-            ))
-        
-        print(f"[INFO] Data disimpan ke backup ({len(self.backup_manager)} pending)")
-    
-    def _send_backup_data(self):
-        """Kirim data yang tersimpan di backup"""
+
+    def _backup_payload(self, payload: dict, server_num: int):
+        """Simpan payload mentah ke backup file."""
+        url = config.server.server_url_1 if server_num == 1 else config.server.server_url_2
+        self.backup_manager.add(BackupData(
+            server_url=url,
+            timestamp=int(time.time()),
+            payload=payload,
+            server_num=server_num
+        ))
+        print(f"[INFO] Payload server {server_num} disimpan ke backup "
+              f"({len(self.backup_manager)} pending)")
+
+    def _send_backup_data(self, max_items: int = 5):
+        """Kirim data yang tersimpan di backup.
+        Token JWT dibuat BARU di sini dengan secret key terkini.
+
+        max_items membatasi jumlah item per siklus agar worker thread
+        tidak terblokir lama (timeout 30 dtk/item bisa melewatkan jadwal
+        baca sensor). Sisa backup dikirim di siklus retry berikutnya.
+        """
         if not self.backup_manager.has_pending_data():
             return
-        
-        print(f"[INFO] Mengirim {len(self.backup_manager)} data backup...")
-        
+
+        pending = self.backup_manager.get_all()[:max_items]
+        print(f"[INFO] Mengirim {len(pending)}/{len(self.backup_manager)} data backup...")
+
         sent_items = []
-        for backup in self.backup_manager.get_all():
-            if self.send_data(backup.server_url, backup.token):
+        failed_servers = set()
+        for backup in pending:
+            # Server ini baru saja gagal — item lain ke server yang sama
+            # hampir pasti gagal juga; jangan buang waktu timeout
+            if backup.server_url in failed_servers:
+                continue
+            if backup.payload:
+                secret = self._secret_for(backup.server_num)
+                if not secret:
+                    continue  # key belum tersedia, coba lagi nanti
+                token = JWTEncoder.create_jwt(backup.payload, secret)
+            else:
+                token = backup.token  # format lama: token jadi
+            if token and self.send_data(backup.server_url, token):
                 sent_items.append(backup)
-        
+            else:
+                failed_servers.add(backup.server_url)
+
         # Hapus yang sudah terkirim
         for item in sent_items:
             self.backup_manager.remove(item)
-        
+
         if sent_items:
-            print(f"[INFO] {len(sent_items)} data backup berhasil dikirim")
+            print(f"[INFO] {len(sent_items)} data backup berhasil dikirim "
+                  f"({len(self.backup_manager)} tersisa)")
+
+    def retry_backup(self):
+        """Public: coba kirim ulang backup — dipanggil worker secara berkala."""
+        self._send_backup_data()
     
     def check_and_update_secret_keys(self):
         """Cek dan update secret key jika berubah"""

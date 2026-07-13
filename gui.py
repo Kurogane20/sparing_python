@@ -22,6 +22,7 @@ from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPainterPath, QLinearGrad
 
 from config import config
 from models import SensorData, OperationalStatus, OperationalState
+from history import SensorHistory
 
 # ── RPi helpers ───────────────────────────────────────────────
 
@@ -116,6 +117,8 @@ class SignalBridge(QObject):
     log_entry         = pyqtSignal(str)
     secret_key_update = pyqtSignal(str, str)   # (preview_key1, preview_key2)
     modbus_log        = pyqtSignal(str)
+    server_status_update = pyqtSignal(bool, bool)  # (sukses_server1, sukses_server2)
+    backup_count_update  = pyqtSignal(int)         # jumlah data backup pending
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -339,13 +342,13 @@ QTabBar::tab:selected{{background:{T.PANEL};color:{T.AMBER};border-bottom:2px so
 QGroupBox{{color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;margin-top:8px;padding-top:12px;font-weight:bold;font-size:11px;}}
 QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;}}
 QLabel{{color:{T.FG2};font-size:11px;}}
-QLineEdit{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:5px 8px;font-size:11px;}}
+QLineEdit{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:9px 10px;font-size:11px;}}
 QLineEdit:focus{{border:1px solid {T.AMBER};}}
-QDoubleSpinBox{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:5px 8px;font-size:12px;font-weight:bold;}}
+QDoubleSpinBox{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:9px 10px;font-size:12px;font-weight:bold;}}
 QDoubleSpinBox:focus{{border:1px solid {T.AMBER};}}
-QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{{width:18px;border:none;background:{T.BORDER};}}
+QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{{width:30px;border:none;background:{T.BORDER};}}
 QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover{{background:{T.AMBER};}}
-QPushButton{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:6px 14px;font-size:11px;font-weight:bold;}}
+QPushButton{{background:{T.CARD};color:{T.FG1};border:1px solid {T.BORDER};border-radius:2px;padding:10px 16px;font-size:11px;font-weight:bold;}}
 QPushButton:hover{{border:1px solid {T.AMBER};color:{T.AMBER};}}
 QPushButton#S{{background:{T.OK};color:#000;border:none;}}
 QPushButton#S:hover{{background:#34d87a;}}
@@ -357,7 +360,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Pengaturan Sistem")
-        self.setFixedSize(480, 400)
+        self.setFixedSize(520, 470)
         self.setStyleSheet(_DS)
 
         root = QVBoxLayout(self)
@@ -375,6 +378,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._t_wifi(),   "WiFi")
         tabs.addTab(self._t_offset(), "Offset Sensor")
         tabs.addTab(self._t_params(), "Parameter")
+        tabs.addTab(self._t_system(), "Sistem")
         root.addWidget(tabs)
 
         bl = QHBoxLayout(); bl.addStretch()
@@ -492,9 +496,95 @@ class SettingsDialog(QDialog):
         g3vb.addWidget(self._cb_cod_int); g3vb.addWidget(desc_cod)
         vb.addWidget(g3)
 
+        g4 = QGroupBox("Konfigurasi Sensor NH3-N")
+        g4vb = QVBoxLayout(g4); g4vb.setSpacing(6); g4vb.setContentsMargins(10,16,10,10)
+        self._cb_nh3n = QCheckBox(f"Sensor NH3-N terpasang (Slave {config.modbus.nh3n_slave_id})")
+        self._cb_nh3n.setChecked(config.modbus.nh3n_enabled)
+        self._cb_nh3n.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        desc_nh3n = QLabel("Kosong: NH3-N dikirim 0.00 dan LED abu-abu  |  Format: Float CDAB reg 0-1")
+        desc_nh3n.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_nh3n.setWordWrap(True)
+        g4vb.addWidget(self._cb_nh3n); g4vb.addWidget(desc_nh3n)
+        vb.addWidget(g4)
+
+        g5 = QGroupBox("Deteksi Anomali")
+        g5vb = QVBoxLayout(g5); g5vb.setSpacing(6); g5vb.setContentsMargins(10,16,10,10)
+        self._cb_anomaly = QCheckBox("Deteksi lonjakan / sensor macet")
+        self._cb_anomaly.setChecked(config.modbus.anomaly_enabled)
+        self._cb_anomaly.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        desc_an = QLabel("Peringatan di log — data tetap dikirim apa adanya")
+        desc_an.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_an.setWordWrap(True)
+        g5vb.addWidget(self._cb_anomaly); g5vb.addWidget(desc_an)
+        vb.addWidget(g5)
+
         note = QLabel("Min. 1 parameter harus aktif.")
         note.setStyleSheet(f"color:{T.FG3};font-size:9px;"); note.setWordWrap(True)
-        vb.addWidget(note); vb.addStretch(); return w
+        vb.addWidget(note); vb.addStretch()
+
+        # Konten tab sudah lebih tinggi dari dialog — bungkus dengan scroll
+        sa = QScrollArea()
+        sa.setWidget(w); sa.setWidgetResizable(True)
+        sa.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        return sa
+
+    def _t_system(self):
+        w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
+        g = QGroupBox("Daya Perangkat")
+        gvb = QVBoxLayout(g); gvb.setSpacing(8); gvb.setContentsMargins(10, 16, 10, 10)
+
+        note = QLabel(
+            "Matikan perangkat lewat tombol ini sebelum mencabut listrik — "
+            "mencegah korupsi SD card."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{T.FG3};font-size:10px;")
+        gvb.addWidget(note)
+
+        b_rb = QPushButton("RESTART PERANGKAT")
+        b_rb.setFixedHeight(48)
+        b_rb.setStyleSheet(
+            f"QPushButton{{background:{T.rgba(T.WARN,28)};color:{T.WARN};"
+            f"border:1px solid {T.rgba(T.WARN,100)};border-radius:2px;"
+            f"font-size:11px;font-weight:bold;font-family:'{T.MONO}';}}"
+            f"QPushButton:hover{{background:{T.rgba(T.WARN,60)};}}"
+        )
+        b_rb.clicked.connect(self._reboot)
+        gvb.addWidget(b_rb)
+
+        b_off = QPushButton("MATIKAN PERANGKAT")
+        b_off.setFixedHeight(48)
+        b_off.setStyleSheet(
+            f"QPushButton{{background:{T.rgba(T.ERR,28)};color:{T.ERR};"
+            f"border:1px solid {T.rgba(T.ERR,100)};border-radius:2px;"
+            f"font-size:11px;font-weight:bold;font-family:'{T.MONO}';}}"
+            f"QPushButton:hover{{background:{T.rgba(T.ERR,60)};}}"
+        )
+        b_off.clicked.connect(self._shutdown)
+        gvb.addWidget(b_off)
+
+        vb.addWidget(g); vb.addStretch(); return w
+
+    def _power_cmd(self, label: str, cmd: list):
+        reply = QMessageBox.question(
+            self, "Konfirmasi",
+            f"{label}?\n\nAplikasi akan berhenti dan data buffer tersimpan aman di disk.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if platform.system() != "Linux":
+            QMessageBox.information(self, "Info", "Hanya tersedia di Linux/Raspberry Pi.")
+            return
+        try:
+            subprocess.run(cmd, timeout=10)
+        except Exception as e:
+            QMessageBox.critical(self, "Gagal", str(e))
+
+    def _reboot(self):
+        self._power_cmd("Restart perangkat", ["sudo", "reboot"])
+
+    def _shutdown(self):
+        self._power_cmd("Matikan perangkat", ["sudo", "shutdown", "-h", "now"])
 
     def _toggle_pw(self):
         if self.e_pass.echoMode() == QLineEdit.EchoMode.Password:
@@ -544,6 +634,8 @@ class SettingsDialog(QDialog):
                 config.display_sensors = selected
             config.modbus.debit_closed_channel = self._cb_closed.isChecked()
             config.modbus.cod_integer_mode     = self._cb_cod_int.isChecked()
+            config.modbus.nh3n_enabled         = self._cb_nh3n.isChecked()
+            config.modbus.anomaly_enabled      = self._cb_anomaly.isChecked()
             config.save()
         except Exception as e:
             QMessageBox.critical(self, "Gagal Menyimpan", str(e))
@@ -561,6 +653,280 @@ class SettingsDialog(QDialog):
         # Notifikasi lewat notification bar MainWindow (bukan QMessageBox).
         if mw and hasattr(mw, 'signal_bridge'):
             mw.signal_bridge.notification.emit("Pengaturan berhasil disimpan", 3000)
+
+# ── History Chart ─────────────────────────────────────────────
+
+class HistoryChart(QWidget):
+    """Grafik garis riwayat sensor — QPainter, satu seri per tampilan.
+
+    Mengikuti kaidah dataviz: garis 2px, grid samar, teks netral (bukan
+    warna seri), garis ambang baku mutu putus-putus, hover crosshair +
+    tooltip, dan empty state.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows: list = []        # [(ts, value)] data mentah
+        self.clr = QColor(T.BLUE)
+        self.unit = ""
+        self.limit_hi = None        # ambang baku mutu atas
+        self._pts: list = []        # [(x, y, ts, v)] hasil layout
+        self._hover = None          # index titik terdekat kursor
+        self.setMinimumHeight(280)
+        self.setMouseTracking(True)
+        self.setStyleSheet(f"background:{T.CARD};")
+
+    def set_data(self, rows, color: str, unit: str, limit_hi):
+        self.rows = [(ts, v) for ts, v in rows if v is not None]
+        self.clr = QColor(color)
+        self.unit = unit
+        self.limit_hi = limit_hi
+        self._hover = None
+        self.update()
+
+    # ── layout ──
+    _L, _R, _T, _B = 56, 14, 14, 28
+
+    def _layout(self, w, h):
+        pw = w - self._L - self._R
+        ph = h - self._T - self._B
+        vals = [v for _, v in self.rows]
+        mn, mx = min(vals), max(vals)
+        if self.limit_hi is not None:
+            mx = max(mx, self.limit_hi)
+        pad = (mx - mn) * 0.08 or 1.0
+        mn, mx = mn - pad, mx + pad
+
+        # Downsample: maks 1 titik per piksel (rata-rata per bucket)
+        rows = self.rows
+        if len(rows) > pw > 0:
+            step = len(rows) / pw
+            ds, i = [], 0.0
+            while int(i) < len(rows):
+                chunk = rows[int(i):max(int(i + step), int(i) + 1)]
+                ts_mid = chunk[len(chunk) // 2][0]
+                avg = sum(v for _, v in chunk) / len(chunk)
+                ds.append((ts_mid, avg))
+                i += step
+            rows = ds
+
+        n = max(len(rows) - 1, 1)
+        self._pts = [
+            (self._L + pw * i / n,
+             self._T + ph * (1 - (v - mn) / (mx - mn)),
+             ts, v)
+            for i, (ts, v) in enumerate(rows)
+        ]
+        return mn, mx, pw, ph
+
+    def paintEvent(self, _):
+        try:
+            w, h = self.width(), self.height()
+            if w <= 0 or h <= 0:
+                return
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(0, 0, w, h, QColor(T.CARD))
+
+            if len(self.rows) < 2:
+                p.setPen(QPen(QColor(T.FG3)))
+                p.setFont(QFont(T.FONT, 10))
+                p.drawText(0, 0, w, h, Qt.AlignmentFlag.AlignCenter,
+                           "Belum ada data riwayat untuk rentang ini")
+                p.end()
+                return
+
+            mn, mx, pw, ph = self._layout(w, h)
+
+            # Grid horizontal samar + label nilai (teks netral)
+            p.setFont(QFont(T.MONO, 8))
+            for i in range(5):
+                y = self._T + ph * i / 4
+                p.setPen(QPen(QColor(T.BORDER2), 1))
+                p.drawLine(self._L, int(y), w - self._R, int(y))
+                val = mx - (mx - mn) * i / 4
+                fmt = f"{val:.1f}" if abs(val) >= 100 else f"{val:.2f}"
+                p.setPen(QPen(QColor(T.FG3)))
+                p.drawText(0, int(y) - 7, self._L - 6, 14,
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, fmt)
+
+            # Label waktu: awal / tengah / akhir
+            span = self.rows[-1][0] - self.rows[0][0]
+            tfmt = "%d/%m %H:%M" if span > 86400 else "%H:%M"
+            for frac, align in ((0, Qt.AlignmentFlag.AlignLeft),
+                                (0.5, Qt.AlignmentFlag.AlignHCenter),
+                                (1, Qt.AlignmentFlag.AlignRight)):
+                idx = int(frac * (len(self._pts) - 1))
+                ts = self._pts[idx][2]
+                p.setPen(QPen(QColor(T.FG3)))
+                p.drawText(self._L, h - self._B + 6, pw, 16,
+                           align, datetime.fromtimestamp(ts).strftime(tfmt))
+
+            # Garis ambang baku mutu (putus-putus)
+            if self.limit_hi is not None and mn < self.limit_hi < mx:
+                y = self._T + ph * (1 - (self.limit_hi - mn) / (mx - mn))
+                pen = QPen(QColor(T.ERR), 1, Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawLine(self._L, int(y), w - self._R, int(y))
+                p.setPen(QPen(QColor(T.FG2)))
+                p.drawText(self._L + 4, int(y) - 4, f"BM {self.limit_hi:g}")
+
+            # Garis data 2px
+            p.setPen(QPen(self.clr, 2))
+            path = QPainterPath()
+            path.moveTo(self._pts[0][0], self._pts[0][1])
+            for x, y, _, _v in self._pts[1:]:
+                path.lineTo(x, y)
+            p.drawPath(path)
+
+            # Hover: crosshair + marker + tooltip
+            if self._hover is not None and 0 <= self._hover < len(self._pts):
+                x, y, ts, v = self._pts[self._hover]
+                p.setPen(QPen(QColor(T.FG3), 1, Qt.PenStyle.DotLine))
+                p.drawLine(int(x), self._T, int(x), h - self._B)
+                # marker dengan ring warna permukaan
+                p.setPen(QPen(QColor(T.CARD), 2))
+                p.setBrush(self.clr)
+                p.drawEllipse(QPoint(int(x), int(y)), 5, 5)
+                # tooltip
+                txt = (f"{datetime.fromtimestamp(ts).strftime('%d/%m %H:%M')}   "
+                       f"{v:.2f} {self.unit}".rstrip())
+                p.setFont(QFont(T.MONO, 9))
+                tw = p.fontMetrics().horizontalAdvance(txt) + 16
+                tx = min(max(int(x) - tw // 2, self._L), w - self._R - tw)
+                p.setPen(QPen(QColor(T.BORDER), 1))
+                p.setBrush(QColor(T.PANEL))
+                p.drawRect(tx, 4, tw, 20)
+                p.setPen(QPen(QColor(T.FG1)))
+                p.drawText(tx, 4, tw, 20, Qt.AlignmentFlag.AlignCenter, txt)
+
+            p.end()
+        except Exception as e:
+            print(f"[WARN] HistoryChart.paintEvent error: {e}")
+
+    def mouseMoveEvent(self, ev):
+        if not self._pts:
+            return
+        mx = ev.position().x()
+        nearest = min(range(len(self._pts)), key=lambda i: abs(self._pts[i][0] - mx))
+        if nearest != self._hover:
+            self._hover = nearest
+            self.update()
+
+    def leaveEvent(self, _):
+        self._hover = None
+        self.update()
+
+
+class HistoryDialog(QDialog):
+    """Riwayat pembacaan sensor dari SQLite — satu parameter per tampilan."""
+
+    _COL = {"pH": 1, "TSS": 2, "DEBIT": 3, "COD": 4, "NH3-N": 5}
+    _RANGES = [("6 JAM", 6), ("24 JAM", 24), ("7 HARI", 168)]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Riwayat Sensor")
+        self.setFixedSize(960, 540)
+        self.setStyleSheet(_DS + f"""
+            QPushButton[selector="true"]{{padding:6px 12px;font-family:'{T.MONO}';}}
+            QPushButton[selector="true"]:checked{{
+                border:1px solid {T.AMBER};color:{T.AMBER};
+                background:{T.rgba(T.AMBER, 25)};}}
+        """)
+        self._hist = SensorHistory()
+        self._param = "pH"
+        self._hours = 24
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
+
+        hd = QLabel("RIWAYAT SENSOR")
+        hd.setStyleSheet(f"color:{T.FG1};font-size:13px;font-weight:bold;letter-spacing:2px;")
+        hd.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(hd)
+
+        # Baris filter: parameter + rentang waktu
+        fr = QHBoxLayout(); fr.setSpacing(4)
+        self._param_btns = {}
+        for name in config.ALL_SENSORS:
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setProperty("selector", "true")
+            b.setChecked(name == self._param)
+            b.clicked.connect(lambda _, n=name: self._pick_param(n))
+            fr.addWidget(b)
+            self._param_btns[name] = b
+        fr.addStretch()
+        self._range_btns = {}
+        for label, hours in self._RANGES:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setProperty("selector", "true")
+            b.setChecked(hours == self._hours)
+            b.clicked.connect(lambda _, hh=hours: self._pick_range(hh))
+            fr.addWidget(b)
+            self._range_btns[hours] = b
+        root.addLayout(fr)
+
+        self._chart = HistoryChart()
+        root.addWidget(self._chart, 1)
+
+        # Stat tiles: MIN / RATA-RATA / MAKS / TERAKHIR
+        st = QHBoxLayout(); st.setSpacing(24)
+        st.addStretch()
+        self._stats = {}
+        for key in ("MIN", "RATA-RATA", "MAKS", "TERAKHIR"):
+            col = QVBoxLayout(); col.setSpacing(0)
+            lb = QLabel(key)
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setStyleSheet(f"color:{T.FG3};font-size:8px;letter-spacing:1px;")
+            lv = QLabel("–")
+            lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lv.setStyleSheet(
+                f"color:{T.FG1};font-size:15px;font-weight:bold;font-family:'{T.MONO}';")
+            col.addWidget(lb); col.addWidget(lv)
+            st.addLayout(col)
+            self._stats[key] = lv
+        st.addStretch()
+        root.addLayout(st)
+
+        bl = QHBoxLayout(); bl.addStretch()
+        bc = QPushButton("Tutup"); bc.clicked.connect(self.reject)
+        bl.addWidget(bc)
+        root.addLayout(bl)
+
+        self._reload()
+
+    def _pick_param(self, name: str):
+        self._param = name
+        for n, b in self._param_btns.items():
+            b.setChecked(n == name)
+        self._reload()
+
+    def _pick_range(self, hours: int):
+        self._hours = hours
+        for hh, b in self._range_btns.items():
+            b.setChecked(hh == hours)
+        self._reload()
+
+    def _reload(self):
+        rows = self._hist.recent(hours=self._hours)
+        idx = self._COL[self._param]
+        data = [(r[0], r[idx]) for r in rows if r[idx] is not None]
+        color, unit, lo, hi = T.SENSORS[self._param]
+        self._chart.set_data(data, color, unit, hi)
+
+        if data:
+            vals = [v for _, v in data]
+            self._stats["MIN"].setText(f"{min(vals):.2f}")
+            self._stats["RATA-RATA"].setText(f"{sum(vals)/len(vals):.2f}")
+            self._stats["MAKS"].setText(f"{max(vals):.2f}")
+            self._stats["TERAKHIR"].setText(f"{vals[-1]:.2f}")
+        else:
+            for lv in self._stats.values():
+                lv.setText("–")
 
 # ── Main Window ───────────────────────────────────────────────
 
@@ -603,6 +969,8 @@ class MainWindow(QMainWindow):
         self.signal_bridge.log_entry.connect(self._on_log_entry)
         self.signal_bridge.secret_key_update.connect(self._on_secret_key)
         self.signal_bridge.modbus_log.connect(self._on_modbus_log)
+        self.signal_bridge.server_status_update.connect(self._on_server_status)
+        self.signal_bridge.backup_count_update.connect(self._on_backup_count)
 
         cw = QWidget()
         cw.setStyleSheet(f"background:{T.BG};")
@@ -700,6 +1068,10 @@ class MainWindow(QMainWindow):
         self._fs_btn.mousePressEvent = self._toggle_fullscreen
         hl.addWidget(self._fs_btn)
 
+        hist_btn = action_btn("RIWAYAT", T.BLUE)
+        hist_btn.mousePressEvent = lambda _: HistoryDialog(self).exec()
+        hl.addWidget(hist_btn)
+
         cfg_btn = action_btn("PENGATURAN", T.AMBER)
         cfg_btn.mousePressEvent = lambda _: SettingsDialog(self).exec()
         hl.addWidget(cfg_btn)
@@ -756,6 +1128,11 @@ class MainWindow(QMainWindow):
             # Voltage — sekarang di header, bukan di sidebar section
             volt = get_rpi_voltage()
             self._chip_volt.setText(f"VOLT {volt}")
+            # Tanggal ikut diperbarui — berubah saat lewat tengah malam
+            self._h_date.setText(datetime.now().strftime("%d %b %Y"))
+        if self._tick_n % 30 == 0:
+            # IP bisa berubah saat WiFi reconnect / ganti jaringan
+            self._chip_ip.setText(f"IP {get_ip()}")
 
     # ─────────────────────────────────────── Status Banner ──
 
@@ -814,7 +1191,8 @@ class MainWindow(QMainWindow):
 
     def _show_notification(self, msg: str, duration: int):
         msg_lo = msg.lower()
-        if any(w in msg_lo for w in ("berhasil", "terhubung", "diambil")):
+        if any(w in msg_lo for w in ("berhasil", "terhubung", "tersambung",
+                                     "diambil", "dipulihkan", "tersinkronisasi")):
             color = T.OK
         elif any(w in msg_lo for w in ("gagal", "rusak", "error")):
             color = T.ERR
@@ -936,6 +1314,7 @@ class MainWindow(QMainWindow):
         # ── 3. DATA BUFFER ──
         s_buf = Section("Data Buffer", color=T.BLUE)
         self._buf_lbl = s_buf.row("Tersimpan", "0 data")
+        self._buf_backup = s_buf.row("Backup Pending", "0")
         bar = QProgressBar()
         bar.setFixedHeight(4); bar.setValue(0)
         bar.setStyleSheet(
@@ -946,18 +1325,15 @@ class MainWindow(QMainWindow):
         s_buf.add(bar)
         vb.addWidget(s_buf)
 
-        # ── 4. SERVER KLHK ──
-        s_kl = Section("Server KLHK", color=T.BLUE)
-        self._kl_conn = s_kl.row("Koneksi", "MEMERIKSA", T.FG2)
-        self._kl_uid  = s_kl.row("UID", config.server.uid_2)
-        self._kl_key  = s_kl.row("Secret Key", "–", T.FG3)
-        vb.addWidget(s_kl)
-
-        # ── 5. SERVER MITRA MUTIARA ──
-        s_mm = Section("Server Mitra Mutiara", color=T.BLUE)
-        self._mm_conn = s_mm.row("Koneksi", "MEMERIKSA", T.FG2)
-        self._mm_key  = s_mm.row("Secret Key", "–", T.FG3)
-        vb.addWidget(s_mm)
+        # ── 4. STATUS SERVER ──
+        # Baris status = hasil KIRIM terakhir per server (bukan cek internet)
+        s_sv = Section("Status Server", color=T.BLUE)
+        self._mm_conn = s_sv.row("Mitra Mutiara", "MENUNGGU", T.FG2)
+        self._kl_conn = s_sv.row("KLHK", "MENUNGGU", T.FG2)
+        self._kl_uid  = s_sv.row("UID KLHK", config.server.uid_2)
+        self._mm_key  = s_sv.row("Key MM", "–", T.FG3)
+        self._kl_key  = s_sv.row("Key KLHK", "–", T.FG3)
+        vb.addWidget(s_sv)
 
         # ── 6. MODBUS RS485 ──
         s_mb = Section("Modbus RS485 (USB)")
@@ -1170,28 +1546,40 @@ class MainWindow(QMainWindow):
         self.cards["COD"].update_value(data.cod, ts)
         self.cards["NH3-N"].update_value(data.nh3n, ts)
 
-        for lb in self._leds.values():
+        # LED per sensor: hijau = OK, merah = gagal, abu-abu = tidak ada sensor
+        led_state = {
+            "PH":  data.ph_ok,  "TSS": data.tss_ok, "FLW": data.debit_ok,
+            "COD": data.cod_ok, "NH3": data.nh3n_ok,
+        }
+        for key, lb in self._leds.items():
+            ok = led_state.get(key)
+            c = T.OK if ok else (T.OFF if ok is None else T.ERR)
             lb.setStyleSheet(
-                f"background:{T.rgba(T.OK,22)};color:{T.OK};"
-                f"border:1px solid {T.rgba(T.OK,80)};border-radius:2px;"
+                f"background:{T.rgba(c,22)};color:{c};"
+                f"border:1px solid {T.rgba(c,80)};border-radius:2px;"
                 f"font-size:8px;font-family:'{T.MONO}';font-weight:bold;"
             )
+
         ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
         self._mb_last.setText(ts_str)
-        self._mb_stat.setText("AKTIF")
+        flags = [v for v in (data.ph_ok, data.tss_ok, data.debit_ok,
+                             data.cod_ok, data.nh3n_ok) if v is not None]
+        ok_n, n = sum(1 for v in flags if v), max(len(flags), 1)
+        if ok_n == 0:
+            self._mb_stat.setText("GAGAL")
+            stat_col = T.ERR
+        else:
+            self._mb_stat.setText(f"AKTIF {ok_n}/{n}")
+            stat_col = T.OK if ok_n == n else T.WARN
         self._mb_stat.setStyleSheet(
-            f"color:{T.OK};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
+            f"color:{stat_col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
         )
         self._check_alarms(data)
 
     def _on_conn(self, ok: bool):
-        txt = "TERHUBUNG" if ok else "TERPUTUS"
+        # Hanya status internet (header + footer) — status per server
+        # diperbarui dari hasil kirim nyata via _on_server_status
         col = T.OK if ok else T.OFF
-        for lb in (self._mm_conn, self._kl_conn):
-            lb.setText(txt)
-            lb.setStyleSheet(
-                f"color:{col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
-            )
         st = "ONLINE" if ok else "OFFLINE"
         self._ft_conn.setText(st)
         self._ft_conn.setStyleSheet(
@@ -1204,9 +1592,26 @@ class MainWindow(QMainWindow):
             f"background:{T.rgba(col,18)};padding:2px 4px;"
         )
 
+    def _on_server_status(self, ok1: bool, ok2: bool):
+        """Update status per server berdasarkan hasil kirim nyata."""
+        now = datetime.now().strftime("%H:%M")
+        for lb, ok in ((self._mm_conn, ok1), (self._kl_conn, ok2)):
+            lb.setText(f"OK {now}" if ok else f"GAGAL {now}")
+            col = T.OK if ok else T.ERR
+            lb.setStyleSheet(
+                f"color:{col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
+            )
+
     def _on_count(self, cur, mx):
         self._buf_lbl.setText(f"{cur} data")
         self._buf_bar.setValue(int(cur / mx * 100) if mx else 0)
+
+    def _on_backup_count(self, n: int):
+        self._buf_backup.setText(str(n))
+        col = T.WARN if n > 0 else T.FG1
+        self._buf_backup.setStyleSheet(
+            f"color:{col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
+        )
 
     def _on_daily(self, n):
         self._f_sent.setText(f"{n} data")
@@ -1241,7 +1646,7 @@ class MainWindow(QMainWindow):
         for i, lbl in enumerate(self._mb_log_labels):
             if i < len(self._mb_log_entries):
                 text = self._mb_log_entries[i]
-                col = T.ERR if "GAGAL" in text or "ERROR" in text else T.FG3
+                col = T.ERR if any(k in text for k in ("GAGAL", "ERROR", "ANOMALI")) else T.FG3
                 lbl.setText(text)
                 lbl.setStyleSheet(
                     f"color:{col};font-size:9px;font-family:'{T.MONO}';"
@@ -1310,8 +1715,10 @@ class MainWindow(QMainWindow):
 
     # ─────────────────────────────────────── Status Operasional ──
 
-    def _set_status(self, status: OperationalStatus):
-        if status != OperationalStatus.NORMAL:
+    def _set_status(self, status: OperationalStatus, confirm: bool = True):
+        # confirm=False dipakai saat restore status dari file (startup) —
+        # tanpa dialog konfirmasi karena bukan aksi operator
+        if status != OperationalStatus.NORMAL and confirm:
             label, color, _ = self._STATUS_META[status]
             reply = QMessageBox.warning(
                 self,

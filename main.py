@@ -22,9 +22,11 @@ from datetime import datetime
 from typing import Optional
 
 from config import config
-from models import SensorData, SensorDataBuffer
+from models import SensorData, SensorDataBuffer, OperationalState, OperationalStatus
 from sensors import create_sensor_reader, ModbusSensorReader, DummySensorReader
 from api_client import APIClient
+from history import SensorHistory
+from anomaly import AnomalyDetector
 from gui import create_application, MainWindow, SignalBridge
 
 # ============================================================
@@ -57,9 +59,19 @@ class AQMSWorker:
 
         self._last_sensor_read = 0
         self._last_connection_check = 0
+        self._last_backup_retry = 0
         self._secret_key_fetched = False
         self._internet_connected = None  # None = belum pernah dicek
+        self._consec_fail = 0  # pembacaan gagal total beruntun → trigger reconnect
         self.daily_sent_count = 0
+        self._daily_date = datetime.now().date()
+        self.history = SensorHistory()  # riwayat pembacaan ke SQLite lokal
+        self.anomaly = AnomalyDetector()  # deteksi lonjakan / sensor macet
+
+        # Pulihkan buffer dari disk (data sebelum mati listrik / restart)
+        restored = self.data_buffer.load_cache()
+        if restored:
+            print(f"[INFO] {restored} data dipulihkan dari buffer cache")
 
     def start(self):
         """Mulai worker thread"""
@@ -81,15 +93,49 @@ class AQMSWorker:
         self.sensor_reader.disconnect()
         print("[INFO] Worker thread dihentikan")
 
+    def _wait_for_valid_clock(self):
+        """Tunggu jam sistem valid sebelum membaca sensor.
+
+        Raspberry Pi tidak punya RTC — boot tanpa internet membuat jam
+        salah (misal 1970) sehingga semua timestamp data invalid di server.
+        Tunggu sampai NTP sync (tahun masuk akal) sebelum lanjut.
+        """
+        warned = False
+        while self.running:
+            if datetime.now().year >= 2025:
+                if warned:
+                    print("[INFO] Jam sistem sudah valid, melanjutkan")
+                    self.signal_bridge.notification.emit("Jam tersinkronisasi", 3000)
+                return
+            if not warned:
+                print("[WARN] Jam sistem belum valid — menunggu sinkronisasi NTP...")
+                self.signal_bridge.notification.emit(
+                    "Menunggu sinkronisasi jam (NTP)...", 5000)
+                warned = True
+            time.sleep(10)
+
     def _run(self):
         """Main loop worker"""
         self._init_sensors()
         self._init_connection()
+        self._wait_for_valid_clock()
+
+        # Tampilkan jumlah buffer yang dipulihkan di GUI
+        if len(self.data_buffer):
+            self.signal_bridge.data_count_update.emit(
+                len(self.data_buffer), config.timing.data_send_count
+            )
+            self.signal_bridge.notification.emit(
+                f"{len(self.data_buffer)} data dipulihkan dari cache", 4000
+            )
+
+        # Tampilkan backup pending dari sesi sebelumnya
+        self.signal_bridge.backup_count_update.emit(self.api_client.pending_backup_count)
 
         while self.running:
             current_time = time.time()
 
-            # Cek koneksi internet setiap 5 detik
+            # Cek koneksi internet setiap interval (default 60 detik)
             if current_time - self._last_connection_check >= config.network.connection_check_interval:
                 self._check_connection()
                 self._last_connection_check = current_time
@@ -97,6 +143,15 @@ class AQMSWorker:
             # Ambil secret key jika belum
             if self._internet_connected and not self._secret_key_fetched:
                 self._fetch_secret_keys()
+
+            # Retry backup tiap interval (default 5 menit) saat online —
+            # tidak menunggu siklus kirim per jam
+            if (self._internet_connected
+                    and self.api_client.pending_backup_count > 0
+                    and current_time - self._last_backup_retry >= config.timing.backup_retry_interval):
+                self.api_client.retry_backup()
+                self._last_backup_retry = current_time
+                self.signal_bridge.backup_count_update.emit(self.api_client.pending_backup_count)
 
             # Baca sensor setiap interval (default 2 menit)
             if current_time - self._last_sensor_read >= config.timing.sensor_read_interval:
@@ -156,14 +211,39 @@ class AQMSWorker:
         print(f"[INFO] Pembacaan sensor #{count}/{config.timing.data_send_count}")
         print(f"{'='*50}")
 
+        # Koneksi belum/tidak terjalin → coba sambungkan dulu
+        if not self.sensor_reader.is_connected() and hasattr(self.sensor_reader, 'reconnect'):
+            self.sensor_reader.reconnect()
+
         # Baca sensor
         sensor_data = self.sensor_reader.read_all_sensors()
+
+        # Deteksi kegagalan total beruntun → reconnect Modbus
+        # (menangani USB adapter lepas-pasang tanpa perlu restart aplikasi)
+        ok_count = getattr(self.sensor_reader, 'last_ok_count', -1)
+        if ok_count == 0:
+            self._consec_fail += 1
+            if self._consec_fail >= 2 and hasattr(self.sensor_reader, 'reconnect'):
+                print(f"[WARN] {self._consec_fail}x pembacaan gagal total — reconnect Modbus")
+                if self.sensor_reader.reconnect():
+                    self.signal_bridge.notification.emit("Modbus tersambung kembali", 3000)
+                self._consec_fail = 0
+        elif ok_count > 0:
+            self._consec_fail = 0
 
         # Update GUI
         self.signal_bridge.sensor_update.emit(sensor_data)
 
-        # Tambah ke buffer
+        # Tambah ke buffer + persist ke disk (proteksi mati listrik)
         buffer_full = self.data_buffer.add(sensor_data)
+        self.data_buffer.save_cache()
+        self.history.insert(sensor_data)  # riwayat permanen (SQLite)
+
+        # Deteksi anomali — peringatan saja, data tidak diubah
+        if config.modbus.anomaly_enabled:
+            for msg in self.anomaly.check_all(sensor_data):
+                print(f"[ANOMALI] {msg}")
+                self.signal_bridge.modbus_log.emit(f"[ANOMALI] {msg}")
         self.signal_bridge.data_count_update.emit(
             len(self.data_buffer),
             config.timing.data_send_count
@@ -182,13 +262,25 @@ class AQMSWorker:
         """Kirim data ke server"""
         print(f"[INFO] Mengirim {len(self.data_buffer)} data ke server...")
 
+        # Reset counter harian saat ganti hari
+        today = datetime.now().date()
+        if today != self._daily_date:
+            self._daily_date = today
+            self.daily_sent_count = 0
+
         success1, success2 = self.api_client.send_all_data(self.data_buffer)
+
+        # Update status per server + backup pending di sidebar GUI
+        self.signal_bridge.server_status_update.emit(success1, success2)
+        self.signal_bridge.backup_count_update.emit(self.api_client.pending_backup_count)
 
         # Update daily count sebelum clear buffer
         sent_count = len(self.data_buffer)
 
-        # Clear buffer
+        # Clear buffer + kosongkan cache disk
+        # (data sudah terkirim atau sudah aman di data_backup.json)
         self.data_buffer.clear()
+        self.data_buffer.save_cache()
         self.signal_bridge.data_count_update.emit(0, config.timing.data_send_count)
 
         # Notifikasi
@@ -236,6 +328,9 @@ def main():
     # Load konfigurasi
     config.load()
 
+    # Pulihkan status operasional terakhir (-1/-2/-3 tetap aktif setelah restart)
+    OperationalState.load()
+
     # Override interval jika diberikan
     if args.interval:
         config.timing.sensor_read_interval = args.interval
@@ -266,9 +361,14 @@ def main():
     if hasattr(worker.sensor_reader, 'gpio_available'):
         window.update_gpio_status(worker.sensor_reader.gpio_available)
 
+    # Tampilkan status operasional yang dipulihkan di GUI (tanpa dialog)
+    if not OperationalState.is_normal():
+        window._set_status(OperationalState.get(), confirm=False)
+
     # Tampilkan window (default fullscreen, --windowed untuk mode jendela)
     if args.windowed:
         window.showMaximized()
+        window._fs_btn.setText("LAYAR PENUH")
     else:
         window.showFullScreen()
 

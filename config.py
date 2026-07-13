@@ -48,6 +48,19 @@ class ModbusConfig:
     tss_slave_id: int = 10
     debit_slave_id: int = 1
     cod_slave_id: int = 5       # Slave ID sensor COD (sesuai manual, ubah jika berbeda)
+    nh3n_slave_id: int = 6      # Slave ID sensor NH3-N
+
+    # Sensor NH3-N opsional — False: nilai dikirim 0.00, LED abu-abu
+    nh3n_enabled: bool = False
+
+    # Nilai nominal arus/tegangan untuk payload server 1
+    # (belum ada sensor pengukur daya; 0.0 = kirim nol seperti sebelumnya)
+    voltage_nominal: float = 0.0
+    current_nominal: float = 0.0
+
+    # Deteksi anomali statistik (lonjakan / sensor macet) — peringatan
+    # di log GUI, data tetap dikirim apa adanya
+    anomaly_enabled: bool = True
 
     # Format baca COD:
     #   False = Float CDAB (32-bit word-swap, sesuai manual spektroskopi)
@@ -85,6 +98,7 @@ class TimingConfig:
     sensor_read_interval: int = 120  # 2 menit dalam detik
     data_send_count: int = 30  # Jumlah data sebelum kirim
     wifi_check_interval: int = 1  # detik
+    backup_retry_interval: int = 300  # retry kirim backup tiap 5 menit
 
 import dataclasses as _dc
 

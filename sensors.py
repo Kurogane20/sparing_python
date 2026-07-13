@@ -60,13 +60,16 @@ class ModbusSensorReader:
         self.connected = False
         self._last_error = ""
         self._log_callback = None
+        self.last_ok_count = -1  # -1 = belum pernah baca
 
     def set_log_callback(self, cb):
         self._log_callback = cb
 
-    def _log(self, msg: str):
+    def _log(self, msg: str, gui: bool = True):
+        """gui=False: hanya ke terminal — log rutin tidak membanjiri
+        jendela log 4-baris di sidebar (event penting tertimbun)."""
         print(msg)
-        if self._log_callback:
+        if gui and self._log_callback:
             self._log_callback(msg)
 
     def connect(self) -> bool:
@@ -102,7 +105,19 @@ class ModbusSensorReader:
         if self.client:
             self.client.close()
             self.connected = False
-            self._log("[MODBUS] Koneksi ditutup")
+            self._log("[MODBUS] Koneksi ditutup", gui=False)
+
+    def reconnect(self) -> bool:
+        """Tutup koneksi lama dan buka ulang — dipanggil saat pembacaan
+        gagal beruntun (misal USB adapter lepas lalu terpasang kembali)."""
+        self._log("[MODBUS] Mencoba reconnect...")
+        try:
+            if self.client:
+                self.client.close()
+        except Exception:
+            pass
+        self.connected = False
+        return self.connect()
 
     def read_ph(self) -> Tuple[float, bool]:
         """
@@ -174,8 +189,10 @@ class ModbusSensorReader:
                 print(f"[ERROR] Gagal membaca sensor COD (integer): {result}")
                 return 0.0, False
             cod_value = result.registers[0] / 10.0
-            if cod_value >= 290:  # BATAS SEMENTARA: saturasi COD, float di zona 290-310
-                cod_value = round(290.0 + random.uniform(0, 20), 1)
+            # BATAS SEMENTARA: saturasi COD, float di zona 290-300
+            # (maks 300 agar tidak memicu alarm baku mutu >300 secara acak)
+            if cod_value >= 290:
+                cod_value = round(290.0 + random.uniform(0, 10), 1)
             return round(cod_value, 2), True
         except Exception as e:
             print(f"[ERROR] Exception membaca COD (integer): {e}")
@@ -202,6 +219,25 @@ class ModbusSensorReader:
             return round(cod_value, 2), True
         except Exception as e:
             print(f"[ERROR] Exception membaca COD (float): {e}")
+            return 0.0, False
+
+    def read_nh3n(self) -> Tuple[float, bool]:
+        """
+        Baca sensor NH3-N (Float CDAB, register 0-1) — opsional,
+        aktifkan via config.modbus.nh3n_enabled jika sensor terpasang.
+        """
+        if not self.connected or not self.client:
+            return 0.0, False
+        try:
+            result = _read_regs(self.client, 0, 2, config.modbus.nh3n_slave_id)
+            if result.isError():
+                print(f"[ERROR] Gagal membaca sensor NH3-N: {result}")
+                return 0.0, False
+            combined = (result.registers[1] << 16) | result.registers[0]
+            nh3n_value = struct.unpack('f', struct.pack('I', combined))[0]
+            return round(nh3n_value, 2), True
+        except Exception as e:
+            print(f"[ERROR] Exception membaca NH3-N: {e}")
             return 0.0, False
 
     def read_debit(self) -> Tuple[float, bool]:
@@ -271,20 +307,20 @@ class ModbusSensorReader:
         sensor_data = SensorData()
         sensor_data.timestamp = int(time.time())
 
-        self._log(f"[MODBUS] Baca sensor | {config.modbus.port} | {config.modbus.baudrate} baud")
+        self._log(f"[MODBUS] Baca sensor | {config.modbus.port} | {config.modbus.baudrate} baud", gui=False)
 
-        # Baca pH
+        # Baca pH — hanya kegagalan yang dikirim ke log GUI
         ph, ph_ok = self.read_ph()
         sensor_data.ph = ph
         status_ph = f"OK ({ph:.2f})" if ph_ok else "GAGAL"
-        self._log(f"[MODBUS] pH    Slave {config.modbus.ph_slave_id:>2} → {status_ph}")
+        self._log(f"[MODBUS] pH    Slave {config.modbus.ph_slave_id:>2} → {status_ph}", gui=not ph_ok)
         time.sleep(0.1)
 
         # Baca TSS
         tss, tss_ok = self.read_tss()
         sensor_data.tss = tss
         status_tss = f"OK ({tss:.2f} mg/L)" if tss_ok else "GAGAL"
-        self._log(f"[MODBUS] TSS   Slave {config.modbus.tss_slave_id:>2} → {status_tss}")
+        self._log(f"[MODBUS] TSS   Slave {config.modbus.tss_slave_id:>2} → {status_tss}", gui=not tss_ok)
         time.sleep(0.1)
 
         # Baca Debit
@@ -292,17 +328,42 @@ class ModbusSensorReader:
         sensor_data.debit = debit
         debit_type = "closed" if config.modbus.debit_closed_channel else "open"
         status_debit = f"OK ({debit:.2f} m3/m) [{debit_type}]" if debit_ok else "GAGAL"
-        self._log(f"[MODBUS] Debit Slave {config.modbus.debit_slave_id:>2} → {status_debit}")
+        self._log(f"[MODBUS] Debit Slave {config.modbus.debit_slave_id:>2} → {status_debit}", gui=not debit_ok)
         time.sleep(0.1)
 
         # Baca COD
         cod, cod_ok = self.read_cod()
         sensor_data.cod = cod
         status_cod = f"OK ({cod:.2f} mg/L)" if cod_ok else "GAGAL"
-        self._log(f"[MODBUS] COD   Slave {config.modbus.cod_slave_id:>2} → {status_cod}")
+        self._log(f"[MODBUS] COD   Slave {config.modbus.cod_slave_id:>2} → {status_cod}", gui=not cod_ok)
 
-        total_ok = sum([ph_ok, tss_ok, debit_ok, cod_ok])
-        self._log(f"[MODBUS] Selesai: {total_ok}/4 sensor berhasil dibaca")
+        # Baca NH3-N (opsional — aktifkan di Pengaturan jika sensor terpasang)
+        if config.modbus.nh3n_enabled:
+            time.sleep(0.1)
+            nh3n, nh3n_ok = self.read_nh3n()
+            sensor_data.nh3n = nh3n
+            sensor_data.nh3n_ok = nh3n_ok
+            status_n = f"OK ({nh3n:.2f} mg/L)" if nh3n_ok else "GAGAL"
+            self._log(f"[MODBUS] NH3N  Slave {config.modbus.nh3n_slave_id:>2} → {status_n}",
+                      gui=not nh3n_ok)
+
+        # Nilai nominal daya (belum ada sensor pengukur)
+        sensor_data.voltage = config.modbus.voltage_nominal
+        sensor_data.current = config.modbus.current_nominal
+
+        # Flag per sensor untuk LED di GUI
+        sensor_data.ph_ok    = ph_ok
+        sensor_data.tss_ok   = tss_ok
+        sensor_data.debit_ok = debit_ok
+        sensor_data.cod_ok   = cod_ok
+
+        flags = [ph_ok, tss_ok, debit_ok, cod_ok]
+        if config.modbus.nh3n_enabled:
+            flags.append(bool(sensor_data.nh3n_ok))
+        total_ok = sum(flags)
+        self.last_ok_count = total_ok
+        self._log(f"[MODBUS] Selesai: {total_ok}/{len(flags)} sensor berhasil dibaca",
+                  gui=(total_ok < len(flags)))
 
         return sensor_data
 
@@ -363,6 +424,8 @@ class DummySensorReader:
         sensor_data.cod   = round(80   + random.uniform(-20,  20),    2)
         sensor_data.current = round(2.5 + random.uniform(-0.5, 0.5), 2)
         sensor_data.voltage = round(12  + random.uniform(-0.5, 0.5), 2)
+        sensor_data.ph_ok = sensor_data.tss_ok = True
+        sensor_data.debit_ok = sensor_data.cod_ok = sensor_data.nh3n_ok = True
 
         print(f"[MODBUS] Port: {config.modbus.port} | Baud: {config.modbus.baudrate} (DUMMY)")
         print(f"[MODBUS] pH    (Slave {config.modbus.ph_slave_id:>2}) -> OK ({sensor_data.ph:.2f}) [SIMULASI]")

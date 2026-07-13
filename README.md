@@ -210,6 +210,42 @@ Cek port COM di Device Manager Windows. Ubah di `config.json` atau GUI sesuai po
 | Config | SD Card txt | JSON config |
 | Threading | Loop tunggal | Multi-thread |
 
+## Menjalankan sebagai Service (Ubuntu / Raspberry Pi)
+
+Agar aplikasi otomatis jalan saat boot dan restart sendiri setelah crash
+atau mati listrik, gunakan systemd service yang sudah disediakan:
+
+```bash
+# Sesuaikan User= dan path di sparing.service jika berbeda, lalu:
+sudo cp sparing.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable sparing
+sudo systemctl start sparing
+
+# Cek status dan log:
+systemctl status sparing
+journalctl -u sparing -f
+```
+
+Persiapan tambahan yang disarankan di perangkat:
+
+```bash
+# Sertifikat SSL & sinkronisasi jam (wajib untuk HTTPS ke server SPARING)
+sudo apt install ca-certificates && sudo update-ca-certificates
+sudo timedatectl set-ntp true
+```
+
+## File Runtime
+
+| File | Isi |
+|------|-----|
+| `config.json` | Konfigurasi (dibuat otomatis) |
+| `buffer_cache.json` | Buffer pembacaan — dipulihkan saat restart |
+| `data_backup.json` | Payload yang gagal terkirim (retry otomatis) |
+| `operational_status.json` | Status operasional (-1/-2/-3) — persist |
+| `sensor_history.db` | Riwayat pembacaan 90 hari (SQLite) |
+| `transmission_log.txt` | Log pengiriman (rotasi otomatis 1 MB) |
+
 ## Lisensi
 
 Internal use only.

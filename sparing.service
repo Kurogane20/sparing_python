@@ -1,0 +1,33 @@
+# SPARING AQMS Monitoring — systemd service
+#
+# Instalasi (di Ubuntu/Raspberry Pi):
+#   1. Sesuaikan User= dan path di bawah jika berbeda
+#   2. sudo cp sparing.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable sparing
+#   5. sudo systemctl start sparing
+#
+# Cek status / log:
+#   systemctl status sparing
+#   journalctl -u sparing -f
+
+[Unit]
+Description=SPARING AQMS Water Quality Monitoring
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mmsparing
+WorkingDirectory=/home/mmsparing/sparing_python
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/mmsparing/.Xauthority
+ExecStart=/home/mmsparing/sparing_python/venv/bin/python main.py
+
+# Restart otomatis apapun penyebab berhentinya (crash, window ditutup,
+# listrik kembali setelah mati) — kunci mencegah gap data
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target

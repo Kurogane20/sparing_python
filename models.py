@@ -19,9 +19,12 @@ class OperationalStatus(IntEnum):
 
 
 class OperationalState:
-    """Thread-safe singleton status operasional RTU (Pasal 6.2.6.6g)."""
+    """Thread-safe singleton status operasional RTU (Pasal 6.2.6.6g).
+    Status di-persist ke file agar tidak hilang saat restart/mati listrik —
+    misal status KALIBRASI harus tetap aktif setelah listrik kembali."""
     _status = OperationalStatus.NORMAL
     _lock = threading.Lock()
+    _file = "operational_status.json"
 
     @classmethod
     def get(cls) -> OperationalStatus:
@@ -32,10 +35,34 @@ class OperationalState:
     def set(cls, status: OperationalStatus) -> None:
         with cls._lock:
             cls._status = status
+        cls._save()
 
     @classmethod
     def is_normal(cls) -> bool:
         return cls.get() == OperationalStatus.NORMAL
+
+    @classmethod
+    def _save(cls) -> None:
+        try:
+            with open(cls._file, 'w') as f:
+                json.dump({"status": int(cls.get())}, f)
+        except Exception as e:
+            print(f"[ERROR] Gagal menyimpan status operasional: {e}")
+
+    @classmethod
+    def load(cls) -> None:
+        """Pulihkan status terakhir dari file — panggil saat aplikasi start."""
+        try:
+            with open(cls._file, 'r') as f:
+                data = json.load(f)
+            with cls._lock:
+                cls._status = OperationalStatus(data.get("status", 0))
+            if cls._status != OperationalStatus.NORMAL:
+                print(f"[INFO] Status operasional dipulihkan: {cls._status.name}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"[ERROR] Gagal memuat status operasional: {e}")
 
 @dataclass
 class SensorData:
@@ -48,6 +75,14 @@ class SensorData:
     cod: float = 0.0
     nh3n: float = 0.0
     timestamp: int = 0  # Unix timestamp
+
+    # Status baca per sensor untuk indikator LED di GUI
+    # (None = sensor tidak tersedia, True = OK, False = gagal dibaca)
+    ph_ok: Optional[bool] = None
+    tss_ok: Optional[bool] = None
+    debit_ok: Optional[bool] = None
+    cod_ok: Optional[bool] = None
+    nh3n_ok: Optional[bool] = None
     
     def to_dict(self) -> dict:
         """Konversi ke dictionary untuk JSON.
@@ -95,6 +130,23 @@ class SensorData:
             "nh3n": round(self.nh3n, 2),
         }
     
+    def to_raw_dict(self) -> dict:
+        """Serialisasi mentah untuk cache disk — tanpa transformasi status."""
+        return {
+            "ph": self.ph, "tss": self.tss, "debit": self.debit,
+            "current": self.current, "voltage": self.voltage,
+            "cod": self.cod, "nh3n": self.nh3n, "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_raw_dict(cls, d: dict) -> 'SensorData':
+        return cls(
+            ph=d.get("ph", 0.0), tss=d.get("tss", 0.0), debit=d.get("debit", 0.0),
+            current=d.get("current", 0.0), voltage=d.get("voltage", 0.0),
+            cod=d.get("cod", 0.0), nh3n=d.get("nh3n", 0.0),
+            timestamp=d.get("timestamp", 0),
+        )
+
     def __str__(self):
         return (f"pH={self.ph:.2f}, TSS={self.tss:.2f}, "
                 f"Debit={self.debit:.2f}, I={self.current:.2f}A, "
@@ -137,42 +189,85 @@ class SensorDataBuffer:
                 payload["data"].append(sensor.to_dict())
         return payload
     
+    def save_cache(self, path: str = "buffer_cache.json"):
+        """Persist isi buffer ke disk — dipanggil setiap selesai baca sensor.
+        Melindungi data dari mati listrik / crash sebelum buffer penuh."""
+        try:
+            with open(path, 'w') as f:
+                json.dump([s.to_raw_dict() for s in self.data], f)
+        except Exception as e:
+            print(f"[ERROR] Gagal menyimpan buffer cache: {e}")
+
+    def load_cache(self, path: str = "buffer_cache.json") -> int:
+        """Muat kembali buffer dari disk saat aplikasi start.
+        Returns: jumlah data yang dipulihkan."""
+        try:
+            with open(path, 'r') as f:
+                raw = json.load(f)
+            self.data = [SensorData.from_raw_dict(d) for d in raw]
+            return len(self.data)
+        except FileNotFoundError:
+            return 0
+        except Exception as e:
+            print(f"[ERROR] Gagal memuat buffer cache: {e}")
+            return 0
+
     def __len__(self):
         return len(self.data)
 
 @dataclass
 class BackupData:
-    """Data backup untuk disimpan ke file saat offline"""
-    token: str
+    """Data backup untuk disimpan ke file saat offline.
+
+    Menyimpan payload MENTAH (bukan token JWT) — token dibuat baru saat
+    kirim ulang dengan secret key terkini, sehingga rotasi key di server
+    tidak membuat backup jadi invalid selamanya.
+    `token` dipertahankan untuk kompatibilitas file backup format lama.
+    """
     server_url: str
     timestamp: int
-    
+    payload: Optional[dict] = None   # payload mentah (uid + data)
+    server_num: int = 0              # 1 = Mitra Mutiara, 2 = KLHK
+    token: str = ""                  # format lama — dikirim apa adanya
+
     def to_dict(self) -> dict:
         return {
-            "token": self.token,
             "server_url": self.server_url,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
+            "payload": self.payload,
+            "server_num": self.server_num,
+            "token": self.token,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'BackupData':
         return cls(
-            token=data["token"],
             server_url=data["server_url"],
-            timestamp=data["timestamp"]
+            timestamp=data["timestamp"],
+            payload=data.get("payload"),
+            server_num=data.get("server_num", 0),
+            token=data.get("token", ""),
         )
 
 class DataBackupManager:
     """Manager untuk backup data saat offline"""
-    
+
+    # ≈ 8 hari data (2 payload/jam) — cegah file membengkak tanpa batas
+    # saat server mati berminggu-minggu; yang tertua dibuang lebih dulu
+    MAX_ITEMS = 400
+
     def __init__(self, backup_file: str = "data_backup.json"):
         self.backup_file = backup_file
         self.backup_list: List[BackupData] = []
         self.load()
-    
+
     def add(self, backup: BackupData):
         """Tambahkan data backup"""
         self.backup_list.append(backup)
+        if len(self.backup_list) > self.MAX_ITEMS:
+            dropped = len(self.backup_list) - self.MAX_ITEMS
+            self.backup_list = self.backup_list[-self.MAX_ITEMS:]
+            print(f"[WARN] Backup penuh ({self.MAX_ITEMS}) — {dropped} data tertua dibuang")
         self.save()
     
     def get_all(self) -> List[BackupData]:
