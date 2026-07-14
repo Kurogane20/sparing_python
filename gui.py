@@ -1087,12 +1087,11 @@ class MainWindow(QMainWindow):
             )
             return lb
 
-        self._chip_ip   = info_tag(f"IP {get_ip()}")
-        self._chip_cpu  = info_tag("CPU --")
-        self._chip_ram  = info_tag("RAM --")
-        self._chip_volt = info_tag("VOLT --")   # pindahan dari seksi Sistem RPi
-        for c in (self._chip_ip, self._chip_cpu, self._chip_ram, self._chip_volt):
-            hl.addWidget(c)
+        # Satu chip gabungan (IP · CPU · RAM · VOLT) — 4 chip terpisah
+        # membuat lebar minimum header > 1024px dan sidebar terpotong
+        self._ip_txt = get_ip()
+        self._chip_info = info_tag(f"IP {self._ip_txt}")
+        hl.addWidget(self._chip_info)
 
         root.addWidget(hdr)
 
@@ -1116,6 +1115,9 @@ class MainWindow(QMainWindow):
     def _tick(self):
         self._h_time.setText(datetime.now().strftime("%H:%M:%S"))
         self._tick_n += 1
+        if self._tick_n % 30 == 0:
+            # IP bisa berubah saat WiFi reconnect / ganti jaringan
+            self._ip_txt = get_ip()
         if self._tick_n % 5 == 0:
             temp = get_cpu_temp()
             try:
@@ -1123,21 +1125,21 @@ class MainWindow(QMainWindow):
                 col = T.ERR if tv > 70 else (T.WARN if tv > 55 else T.FG3)
             except ValueError:
                 col = T.FG3
-            self._chip_cpu.setText(f"CPU {temp}")
-            self._chip_cpu.setStyleSheet(
+            parts = [f"IP {self._ip_txt}"]
+            if temp != "N/A":
+                parts.append(temp)
+            parts.append(f"RAM {get_mem()}")
+            volt = get_rpi_voltage()
+            if volt != "N/A":
+                parts.append(volt)
+            self._chip_info.setText(" · ".join(parts))
+            self._chip_info.setStyleSheet(
                 f"color:{col};border:1px solid {T.rgba(col,80)};"
                 f"border-radius:2px;padding:2px 7px;font-size:9px;"
                 f"font-family:'{T.MONO}';"
             )
-            self._chip_ram.setText(f"RAM {get_mem()}")
-            # Voltage — sekarang di header, bukan di sidebar section
-            volt = get_rpi_voltage()
-            self._chip_volt.setText(f"VOLT {volt}")
             # Tanggal ikut diperbarui — berubah saat lewat tengah malam
             self._h_date.setText(datetime.now().strftime("%d %b %Y"))
-        if self._tick_n % 30 == 0:
-            # IP bisa berubah saat WiFi reconnect / ganti jaringan
-            self._chip_ip.setText(f"IP {get_ip()}")
 
     # ─────────────────────────────────────── Status Banner ──
 
