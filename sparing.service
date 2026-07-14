@@ -22,6 +22,9 @@ User=mmsparing
 WorkingDirectory=/home/mmsparing/sparing_python
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/mmsparing/.Xauthority
+# Paksa Qt lewat X11/XWayland — fullscreen di Wayland murni sering
+# tidak menutupi seluruh layar
+Environment=QT_QPA_PLATFORM=xcb
 ExecStart=/home/mmsparing/sparing_python/venv/bin/python main.py
 
 # Restart otomatis apapun penyebab berhentinya (crash, window ditutup,

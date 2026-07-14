@@ -1105,6 +1105,11 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self._fs_btn.setText("LAYAR PENUH")
         else:
+            # Set geometri layar dulu — WM tertentu (GNOME/Wayland)
+            # mempertahankan ukuran lama saat fullscreen
+            scr = QApplication.primaryScreen()
+            if scr:
+                self.setGeometry(scr.geometry())
             self.showFullScreen()
             self._fs_btn.setText("JENDELA")
 

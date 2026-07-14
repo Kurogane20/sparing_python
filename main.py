@@ -370,7 +370,17 @@ def main():
         window.showMaximized()
         window._fs_btn.setText("LAYAR PENUH")
     else:
+        # GNOME/Wayland di Ubuntu sering mempertahankan ukuran lama saat
+        # showFullScreen() dipanggil sebelum window ter-map → desktop
+        # terlihat di bawah. Set geometri layar eksplisit + tegaskan ulang
+        # setelah event loop berjalan.
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer
+        scr = QApplication.primaryScreen()
+        if scr:
+            window.setGeometry(scr.geometry())
         window.showFullScreen()
+        QTimer.singleShot(400, window.showFullScreen)
 
     # Mulai worker
     worker.start()
