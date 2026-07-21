@@ -27,6 +27,10 @@ Environment=XAUTHORITY=/home/mmsparing/.Xauthority
 Environment=QT_QPA_PLATFORM=xcb
 ExecStart=/home/mmsparing/sparing_python/venv/bin/python main.py
 
+# Best-effort "stopped" event on shutdown (works only if power/network survive;
+# otherwise the server-side dead-man's switch reports the outage). Never blocks.
+ExecStopPost=/home/mmsparing/sparing_python/venv/bin/python /home/mmsparing/sparing_python/last_gasp.py
+
 # Restart otomatis apapun penyebab berhentinya (crash, window ditutup,
 # listrik kembali setelah mati) — kunci mencegah gap data
 Restart=always

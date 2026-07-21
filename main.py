@@ -68,6 +68,37 @@ class AQMSWorker:
         self.history = SensorHistory()  # riwayat pembacaan ke SQLite lokal
         self.anomaly = AnomalyDetector()  # deteksi lonjakan / sensor macet
 
+        self._last_send_ok_mm = None    # status kirim terakhir per server
+        self._last_send_ok_klhk = None
+
+        # --- self-telemetry (fully isolated: never affects the data path) ---
+        self._telemetry = None
+        self._event_log = None
+        self._run_marker = None
+        self._last_heartbeat = 0
+        self._start_time = time.time()
+        self._read_resources = None
+        try:
+            from telemetry import TelemetryClient, EventLog, RunMarker, read_resources
+            self._telemetry = TelemetryClient(
+                config.server.uid_1,
+                config.server.logger_heartbeat_url,
+                config.server.logger_events_url,
+                log_cb=lambda m: self.signal_bridge.log_entry.emit(m),
+            )
+            self._event_log = EventLog("telemetry_events.db")
+            self._run_marker = RunMarker("logger_running.marker")
+            prev_clean = self._run_marker.previous_shutdown_clean()
+            self._run_marker.mark_running()
+            self._event_log.append(
+                "started", severity="info",
+                detail=f"previous_shutdown_clean={prev_clean}",
+            )
+            self._read_resources = read_resources
+        except Exception as e:  # telemetry init must not stop the worker
+            print(f"[WARN] telemetry init failed (continuing without it): {e}")
+            self._telemetry = None
+
         # Pulihkan buffer dari disk (data sebelum mati listrik / restart)
         restored = self.data_buffer.load_cache()
         if restored:
@@ -86,6 +117,16 @@ class AQMSWorker:
     def stop(self):
         """Hentikan worker thread dan bersihkan resource"""
         self.running = False
+
+        # Tandai shutdown bersih + catat event (best-effort; tak boleh menghambat stop).
+        try:
+            if self._event_log is not None:
+                self._event_log.append("stopping", severity="info")
+            if self._run_marker is not None:
+                self._run_marker.mark_clean_shutdown()
+        except Exception:
+            pass
+
         if self.thread:
             self.thread.join(timeout=5)
 
@@ -158,8 +199,54 @@ class AQMSWorker:
                 self._read_sensors()
                 self._last_sensor_read = current_time
 
+            # Self-telemetry heartbeat (isolated — wrapped so it can never
+            # interrupt sensor reads or sending)
+            if (self._telemetry is not None
+                    and current_time - self._last_heartbeat >= config.timing.heartbeat_interval):
+                self._last_heartbeat = current_time
+                try:
+                    self._emit_heartbeat()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[WARN] heartbeat tick failed: {e}")
+
             # Sleep untuk mengurangi CPU usage
             time.sleep(0.5)
+
+    def _current_sensor_ok(self) -> dict:
+        """Latest per-sensor read status from the most recent buffered reading."""
+        last = self.data_buffer.data[-1] if self.data_buffer.data else None
+        if last is None:
+            return {}
+        return {"ph": last.ph_ok, "tss": last.tss_ok, "debit": last.debit_ok,
+                "cod": last.cod_ok, "nh3n": last.nh3n_ok}
+
+    def _emit_heartbeat(self):
+        """Build a status snapshot, flush unsynced events, then send the heartbeat.
+        Fully isolated — any failure is swallowed by the caller's try/except."""
+        from telemetry import build_status
+        from models import OperationalState
+        res = self._read_resources() if self._read_resources else {}
+        snap = {
+            "uptime_s": int(time.time() - self._start_time),
+            "logger_version": getattr(config, "VERSION", "unknown"),
+            "op_status": int(OperationalState.get()),
+            "sensor_ok": self._current_sensor_ok(),
+            "consec_fail": self._consec_fail,
+            "internet_ok": bool(self._internet_connected),
+            "last_send_ok_mm": self._last_send_ok_mm,
+            "last_send_ok_klhk": self._last_send_ok_klhk,
+            "buffer_depth": len(self.data_buffer.data),
+            "daily_sent": self.daily_sent_count,
+            **res,
+        }
+        status = build_status(snap)
+        secret = self.api_client.secret_key_1
+        # push any unsynced events first, then the heartbeat
+        if self._event_log is not None:
+            pending = self._event_log.unsynced(limit=200)
+            if pending and self._telemetry.send_events(pending, secret):
+                self._event_log.mark_synced([e["event_uid"] for e in pending])
+        self._telemetry.send_heartbeat(status, secret)
 
     def _init_sensors(self):
         """Inisialisasi koneksi sensor"""
@@ -183,11 +270,19 @@ class AQMSWorker:
         connected = self.api_client.check_internet_connection()
 
         if connected != self._internet_connected:
+            was = self._internet_connected
             self._internet_connected = connected
             self.signal_bridge.connection_update.emit(connected)
 
             status = "Terhubung" if connected else "Terputus"
             print(f"[INFO] Status internet: {status}")
+
+            # Catat perubahan konektivitas (hanya transisi, bukan cek pertama).
+            if self._event_log is not None and was is not None:
+                if connected:
+                    self._event_log.append("net_up", severity="info")
+                else:
+                    self._event_log.append("net_down", severity="warning")
 
     def _fetch_secret_keys(self):
         """Ambil secret key dari server"""
@@ -269,6 +364,13 @@ class AQMSWorker:
             self.daily_sent_count = 0
 
         success1, success2 = self.api_client.send_all_data(self.data_buffer)
+
+        # Rekam status kirim terakhir per server untuk heartbeat telemetri
+        self._last_send_ok_mm = success1
+        self._last_send_ok_klhk = success2
+        if self._event_log is not None and not (success1 and success2):
+            which = "MM+KLHK" if not (success1 or success2) else ("KLHK" if success1 else "MM")
+            self._event_log.append("send_fail", severity="warning", detail=f"gagal kirim: {which}")
 
         # Update status per server + backup pending di sidebar GUI
         self.signal_bridge.server_status_update.emit(success1, success2)
