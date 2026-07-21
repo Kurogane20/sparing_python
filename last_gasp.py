@@ -14,6 +14,12 @@ try:
     from config import config
     from api_client import JWTEncoder, APIClient
 
+    # Load config.json so uid_1/secret_key_url reflect THIS site (e.g. FSK-LOG),
+    # not the dataclass default (admin-LOG) — otherwise get-key 404s and the
+    # event is signed with the wrong secret. main.py loads this at startup, but
+    # last_gasp runs as its own process and must load it itself.
+    config.load()
+
     api = APIClient()
     api.fetch_all_secret_keys()
     secret = api.secret_key_1
