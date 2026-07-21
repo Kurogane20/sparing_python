@@ -27,6 +27,18 @@ class ServerConfig:
     secret_key_url_2: str = "https://sparing.kemenlh.go.id/api/secret-sensor"
     uid_2: str = "tesuid2"
 
+    @property
+    def logger_heartbeat_url(self) -> str:
+        # Same host as server 1, logger prefix — derived so a server_url_1
+        # override carries through instead of hard-coding the host.
+        base = self.server_url_1.split("/api/")[0]
+        return f"{base}/logger/heartbeat"
+
+    @property
+    def logger_events_url(self) -> str:
+        base = self.server_url_1.split("/api/")[0]
+        return f"{base}/logger/events"
+
 def _default_serial_port() -> str:
     """Deteksi port serial default berdasarkan platform"""
     if platform.system() == "Linux":
@@ -99,6 +111,7 @@ class TimingConfig:
     data_send_count: int = 30  # Jumlah data sebelum kirim
     wifi_check_interval: int = 1  # detik
     backup_retry_interval: int = 300  # retry kirim backup tiap 5 menit
+    heartbeat_interval: int = 120  # self-telemetry heartbeat tiap 2 menit
 
 import dataclasses as _dc
 
