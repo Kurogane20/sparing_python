@@ -13,7 +13,12 @@
 
 [Unit]
 Description=SPARING AQMS Water Quality Monitoring
-After=graphical.target network-online.target
+# Do NOT add `After=graphical.target` — this unit is WantedBy=graphical.target, so
+# ordering it after that same target creates a boot-time ordering cycle; systemd then
+# deletes the start job and the service is left inactive/dead after every reboot.
+# Order after the display manager instead (a no-op if none exists) so X (:0) is up;
+# Restart=always covers any remaining display-readiness race.
+After=network-online.target display-manager.service
 Wants=network-online.target
 
 [Service]
