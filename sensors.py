@@ -136,7 +136,7 @@ class ModbusSensorReader:
 
             ph_raw = result.registers[1] / 100.0
             ph_value = self._apply_ph_offset(ph_raw)
-            return ph_value, True
+            return ph_raw, True
 
         except Exception as e:
             print(f"[ERROR] Exception membaca pH: {e}")
