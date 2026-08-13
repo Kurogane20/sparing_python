@@ -163,7 +163,7 @@ class ModbusSensorReader:
             combined = (high_word << 16) | low_word
             tss_raw = struct.unpack('f', struct.pack('I', combined))[0]
             tss_value = self._apply_tss_offset(tss_raw)
-            return tss_value, True
+            return tss_raw, True
 
         except Exception as e:
             print(f"[ERROR] Exception membaca TSS: {e}")
