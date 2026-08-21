@@ -73,6 +73,13 @@ class APIClient:
         self.secret_key_1: str = ""
         self.secret_key_2: str = ""
         self.backup_manager = DataBackupManager(config.data_backup_file)
+        # Auto-bersihkan backup dengan uid lama (mis. setelah uid diganti):
+        # payload-nya membawa uid lama, jadi akan ditolak server selamanya dan
+        # hanya membebani antrean retry. Dibuang saat startup.
+        _dropped = self.backup_manager.purge_foreign_uids(
+            {config.server.uid_1, config.server.uid_2})
+        if _dropped:
+            print(f"[INFO] {_dropped} backup uid lama dibersihkan (uid berganti)")
         self._session = requests.Session()
         self._session.headers.update({
             'Content-Type': 'application/json',

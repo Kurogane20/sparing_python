@@ -270,10 +270,32 @@ class DataBackupManager:
             print(f"[WARN] Backup penuh ({self.MAX_ITEMS}) — {dropped} data tertua dibuang")
         self.save()
     
+    def purge_foreign_uids(self, valid_uids) -> int:
+        """Buang backup yang uid payload-nya bukan salah satu uid aktif.
+
+        Setelah uid stasiun diganti, backup lama membawa uid lama di payload —
+        server menolaknya selamanya (site/secret tak cocok) sehingga hanya
+        menumpuk sebagai pending. Ini membuangnya otomatis. Backup format lama
+        (token tanpa payload) dan payload tanpa uid dibiarkan (tak bisa dinilai).
+        Mengembalikan jumlah yang dibuang.
+        """
+        valid = {u for u in valid_uids if u}
+        if not valid:
+            return 0
+        kept = [
+            b for b in self.backup_list
+            if not b.payload or b.payload.get("uid") is None or b.payload.get("uid") in valid
+        ]
+        dropped = len(self.backup_list) - len(kept)
+        if dropped:
+            self.backup_list = kept
+            self.save()
+        return dropped
+
     def get_all(self) -> List[BackupData]:
         """Ambil semua data backup"""
         return self.backup_list.copy()
-    
+
     def clear(self):
         """Hapus semua data backup"""
         self.backup_list.clear()
