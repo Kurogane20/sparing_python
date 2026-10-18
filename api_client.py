@@ -68,11 +68,29 @@ class APIClient:
     """
     Client untuk komunikasi dengan server API SPARING
     """
-    
+
+    # Item backup yang ditolak permanen sebanyak ini (saat server terbukti
+    # menerima data lain) dipindah ke file rejected
+    MAX_REJECTS = 6
+    # Server dianggap "sehat untuk perangkat ini" jika menerima data dalam
+    # jendela ini — penolakan di luar jendela bisa masalah konfigurasi
+    REJECT_PROOF_WINDOW = 600  # detik
+    # Batas lama satu siklus kirim backup (jaga jadwal baca sensor 2 menit)
+    BACKUP_TIME_BUDGET = 60  # detik
+    # KLHK menolak payload yang seluruh datanya sudah ada di server
+    _DUPLICATE_MARKERS = ("duplikasi data", "sudah terkirim")
+
     def __init__(self):
         self.secret_key_1: str = ""
         self.secret_key_2: str = ""
+        self._accepted_at: dict = {}  # server_url → waktu terakhir data diterima
         self.backup_manager = DataBackupManager(config.data_backup_file)
+        # Backup format lama (token jadi) → payload, agar ditandatangani ulang
+        # dengan key terkini dan uid-nya bisa dinilai purge_foreign_uids
+        _upgraded = self.backup_manager.upgrade_legacy_tokens({
+            config.server.server_url_1: 1, config.server.server_url_2: 2})
+        if _upgraded:
+            print(f"[INFO] {_upgraded} backup format lama dikonversi ke payload")
         # Auto-bersihkan backup dengan uid lama (mis. setelah uid diganti):
         # payload-nya membawa uid lama, jadi akan ditolak server selamanya dan
         # hanya membebani antrean retry. Dibuang saat startup.
@@ -205,66 +223,91 @@ class APIClient:
             server_url: URL server tujuan
             token: JWT token
         Returns:
-            True jika berhasil
+            True jika diterima (atau datanya memang sudah ada di server)
+        """
+        delivered = self._post(server_url, token) in ("ok", "duplicate")
+        if delivered:
+            self._accepted_at[server_url] = time.time()
+        return delivered
+
+    def _post(self, server_url: str, token: str) -> str:
+        """Kirim satu token JWT dan klasifikasikan jawabannya:
+          "ok"        — diterima
+          "duplicate" — ditolak karena datanya sudah ada (anggap terkirim)
+          "rejected"  — server menolak item ini (HTTP 4xx / status=false);
+                        mengirim ulang item yang sama tidak akan berhasil
+          "error"     — gangguan sementara (timeout, koneksi, 5xx, 408, 429)
         """
         try:
-            request_body = {"token": token}
-            
             response = self._session.post(
                 server_url,
-                json=request_body,
+                json={"token": token},
                 timeout=30
             )
-            
-            if response.status_code == 200:
-                try:
-                    body = response.json()
-                    # Server 1 (Mitra Mutiara): {"rows":N, "message":"...", "uid":"...", "device_id":"..."}
-                    # Server 2 (KLHK):          {"status":true/false, "desc":null/"..."}
-                    if "status" in body:
-                        ok   = body.get("status", False)
-                        desc = body.get("desc") or "OK"
-                        if ok:
-                            self._write_log(
-                                f"KIRIM OK  | {server_url} | {desc}",
-                                short=f"OK  {server_url.split('/')[2]}"
-                            )
-                            return True
-                        else:
-                            self._write_log(
-                                f"KIRIM GAGAL | {server_url} | HTTP 200 status=false | {desc}",
-                                short=f"GAGAL  {str(desc)[:35]}"
-                            )
-                            return False
-                    else:
-                        rows   = body.get("rows", "?")
-                        msg    = body.get("message", "OK")
-                        uid    = body.get("uid", "-")
-                        dev_id = body.get("device_id", "-")
-                        self._write_log(
-                            f"KIRIM OK  | {server_url} | rows={rows} | uid={uid} | device_id={dev_id} | msg={msg}",
-                            short=f"OK  rows={rows}  uid={uid}"
-                        )
-                        return True
-                except Exception:
-                    self._write_log(
-                        f"KIRIM OK  | {server_url} | raw={response.text[:120]}",
-                        short=f"OK  {response.text[:40]}"
-                    )
-                    return True
-            else:
-                self._write_log(
-                    f"KIRIM GAGAL | {server_url} | HTTP {response.status_code} | {response.text[:150]}",
-                    short=f"GAGAL  HTTP {response.status_code}"
-                )
-                return False
-
         except Timeout:
             self._write_log(f"KIRIM GAGAL | {server_url} | TIMEOUT", short="GAGAL  TIMEOUT")
-            return False
+            return "error"
         except RequestException as e:
             self._write_log(f"KIRIM GAGAL | {server_url} | {e}", short=f"GAGAL  {str(e)[:40]}")
-            return False
+            return "error"
+
+        status = response.status_code
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            body = None
+
+        if status == 200:
+            # Server 1 (Mitra Mutiara): {"rows":N, "message":"...", "uid":"...", "device_id":"..."}
+            # Server 2 (KLHK):          {"status":true/false, "desc":null/"..."}
+            if body is None:
+                self._write_log(
+                    f"KIRIM OK  | {server_url} | raw={response.text[:120]}",
+                    short=f"OK  {response.text[:40]}"
+                )
+                return "ok"
+            if "status" not in body:
+                rows   = body.get("rows", "?")
+                msg    = body.get("message", "OK")
+                uid    = body.get("uid", "-")
+                dev_id = body.get("device_id", "-")
+                self._write_log(
+                    f"KIRIM OK  | {server_url} | rows={rows} | uid={uid} | device_id={dev_id} | msg={msg}",
+                    short=f"OK  rows={rows}  uid={uid}"
+                )
+                return "ok"
+            if body.get("status"):
+                self._write_log(
+                    f"KIRIM OK  | {server_url} | {body.get('desc') or 'OK'}",
+                    short=f"OK  {server_url.split('/')[2]}"
+                )
+                return "ok"
+            # status=false → diperlakukan sebagai penolakan di bawah
+
+        detail = f"HTTP {status} | {response.text[:150]}"
+        if status == 200 or 400 <= status < 500:
+            if any(m in response.text.lower() for m in self._DUPLICATE_MARKERS):
+                self._write_log(
+                    f"KIRIM OK  | {server_url} | duplikat, data sudah ada di server | {detail}",
+                    short=f"OK  {server_url.split('/')[2]} (sudah ada)"
+                )
+                return "duplicate"
+            if status not in (408, 429):
+                self._write_log(
+                    f"KIRIM GAGAL | {server_url} | {detail}",
+                    short=f"DITOLAK  HTTP {status}"
+                )
+                return "rejected"
+        self._write_log(f"KIRIM GAGAL | {server_url} | {detail}", short=f"GAGAL  HTTP {status}")
+        return "error"
+
+    def _recently_accepted(self, server_url: str) -> bool:
+        """Server ini menerima data perangkat ini dalam REJECT_PROOF_WINDOW
+        terakhir — uid/secret terbukti valid, jadi penolakan = itemnya rusak."""
+        last = self._accepted_at.get(server_url)
+        return last is not None and time.time() - last <= self.REJECT_PROOF_WINDOW
     
     def _build_payloads(self, data_buffer: SensorDataBuffer) -> Tuple[dict, dict]:
         """Buat payload mentah untuk kedua server."""
@@ -330,22 +373,37 @@ class APIClient:
         """Kirim data yang tersimpan di backup.
         Token JWT dibuat BARU di sini dengan secret key terkini.
 
-        max_items membatasi jumlah item per siklus agar worker thread
+        max_items membatasi jumlah PERCOBAAN kirim per server per siklus dan
+        BACKUP_TIME_BUDGET membatasi lama satu siklus, agar worker thread
         tidak terblokir lama (timeout 30 dtk/item bisa melewatkan jadwal
         baca sensor). Sisa backup dikirim di siklus retry berikutnya.
+
+        Seluruh antrean dipindai (bukan hanya max_items item tertua): item
+        ke server yang sedang gangguan di siklus ini dilewati, sehingga
+        backup server yang terus gagal (mis. KLHK) tidak menahan backup
+        server lain di belakangnya sampai ~16 hari.
+
+        Item yang DITOLAK (HTTP 4xx) oleh server yang baru saja menerima data
+        lain adalah item rusak (uid/format salah) — ia tidak menahan item lain
+        ke server yang sama, dan setelah MAX_REJECTS kali dipindah ke file
+        rejected. Tanpa bukti server menerima data, penolakan bisa berarti
+        masalah konfigurasi (site belum terdaftar) — server dilewati saja.
         """
         if not self.backup_manager.has_pending_data():
             return
 
-        pending = self.backup_manager.get_all()[:max_items]
-        print(f"[INFO] Mengirim {len(pending)}/{len(self.backup_manager)} data backup...")
+        print(f"[INFO] Mengirim data backup ({len(self.backup_manager)} pending)...")
 
+        deadline = time.monotonic() + self.BACKUP_TIME_BUDGET
         sent_items = []
+        rejected_items = []
         failed_servers = set()
-        for backup in pending:
+        attempts = {}
+        for backup in self.backup_manager.get_all():
+            url = backup.server_url
             # Server ini baru saja gagal — item lain ke server yang sama
             # hampir pasti gagal juga; jangan buang waktu timeout
-            if backup.server_url in failed_servers:
+            if url in failed_servers or attempts.get(url, 0) >= max_items:
                 continue
             if backup.payload:
                 secret = self._secret_for(backup.server_num)
@@ -354,10 +412,19 @@ class APIClient:
                 token = JWTEncoder.create_jwt(backup.payload, secret)
             else:
                 token = backup.token  # format lama: token jadi
-            if token and self.send_data(backup.server_url, token):
+            if not token:
+                continue
+            if time.monotonic() >= deadline:
+                break
+            attempts[url] = attempts.get(url, 0) + 1
+            result = self._post(url, token)
+            if result in ("ok", "duplicate"):
+                self._accepted_at[url] = time.time()
                 sent_items.append(backup)
+            elif result == "rejected" and self._recently_accepted(url):
+                rejected_items.append(backup)
             else:
-                failed_servers.add(backup.server_url)
+                failed_servers.add(url)
 
         # Hapus yang sudah terkirim
         for item in sent_items:
@@ -366,6 +433,19 @@ class APIClient:
         if sent_items:
             print(f"[INFO] {len(sent_items)} data backup berhasil dikirim "
                   f"({len(self.backup_manager)} tersisa)")
+
+        if rejected_items:
+            for item in rejected_items:
+                item.rejects += 1
+            self.backup_manager.save()
+            dead = [b for b in rejected_items if b.rejects >= self.MAX_REJECTS]
+            if dead:
+                self.backup_manager.dead_letter(dead)
+                self._write_log(
+                    f"BACKUP DITOLAK | {len(dead)} item ditolak {self.MAX_REJECTS}x, "
+                    f"dipindah ke {self.backup_manager.rejected_file}",
+                    short=f"{len(dead)} backup ditolak permanen"
+                )
 
     def retry_backup(self):
         """Public: coba kirim ulang backup — dipanggil worker secara berkala."""

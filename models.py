@@ -7,8 +7,22 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import datetime
 from enum import IntEnum
+import base64
+import os
 import threading
 import json
+
+
+def decode_jwt_payload(token: str) -> Optional[dict]:
+    """Isi payload JWT (bagian tengah, base64url) TANPA verifikasi tanda
+    tangan. None jika token tidak bisa didekode."""
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        data = json.loads(base64.urlsafe_b64decode(part))
+    except (IndexError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class OperationalStatus(IntEnum):
@@ -229,6 +243,7 @@ class BackupData:
     payload: Optional[dict] = None   # payload mentah (uid + data)
     server_num: int = 0              # 1 = Mitra Mutiara, 2 = KLHK
     token: str = ""                  # format lama — dikirim apa adanya
+    rejects: int = 0                 # berapa kali ditolak permanen (HTTP 4xx)
 
     def to_dict(self) -> dict:
         return {
@@ -237,6 +252,7 @@ class BackupData:
             "payload": self.payload,
             "server_num": self.server_num,
             "token": self.token,
+            "rejects": self.rejects,
         }
 
     @classmethod
@@ -247,6 +263,7 @@ class BackupData:
             payload=data.get("payload"),
             server_num=data.get("server_num", 0),
             token=data.get("token", ""),
+            rejects=data.get("rejects", 0),
         )
 
 class DataBackupManager:
@@ -258,6 +275,10 @@ class DataBackupManager:
 
     def __init__(self, backup_file: str = "data_backup.json"):
         self.backup_file = backup_file
+        # Item yang ditolak permanen dipindah ke sini — tidak dihapus,
+        # bisa diperiksa / dikembalikan manual
+        stem, ext = os.path.splitext(backup_file)
+        self.rejected_file = f"{stem}_rejected{ext or '.json'}"
         self.backup_list: List[BackupData] = []
         self.load()
 
@@ -291,6 +312,56 @@ class DataBackupManager:
             self.backup_list = kept
             self.save()
         return dropped
+
+    def upgrade_legacy_tokens(self, server_nums: dict) -> int:
+        """Ubah backup format lama (token JWT jadi, tanpa payload) menjadi
+        payload mentah dengan mendekode isi token-nya.
+
+        Token lama ditandatangani dengan secret key LAMA, jadi ditolak server
+        selamanya; dengan payload ia ditandatangani ulang dengan key terkini
+        saat retry, dan purge_foreign_uids bisa menilai uid-nya.
+        server_nums memetakan server_url → nomor server (1/2); URL yang tidak
+        dikenal dibiarkan (tidak tahu key mana yang dipakai).
+        Mengembalikan jumlah yang dikonversi.
+        """
+        upgraded = 0
+        for b in self.backup_list:
+            if b.payload or not b.token:
+                continue
+            num = server_nums.get(b.server_url)
+            payload = decode_jwt_payload(b.token)
+            if not num or not payload or not payload.get("uid") \
+                    or not isinstance(payload.get("data"), list):
+                continue
+            b.payload, b.server_num, b.token = payload, num, ""
+            upgraded += 1
+        if upgraded:
+            self.save()
+        return upgraded
+
+    def dead_letter(self, items: List[BackupData]) -> None:
+        """Pindahkan item yang ditolak permanen ke rejected_file lalu hapus
+        dari antrean. Jika file gagal ditulis, item tetap di antrean."""
+        if not items:
+            return
+        try:
+            with open(self.rejected_file, 'r') as f:
+                existing = json.load(f)
+        except FileNotFoundError:
+            existing = []
+        except Exception as e:
+            print(f"[ERROR] Gagal memuat {self.rejected_file}: {e}")
+            return
+        existing = (existing + [b.to_dict() for b in items])[-self.MAX_ITEMS:]
+        try:
+            with open(self.rejected_file, 'w') as f:
+                json.dump(existing, f, indent=2)
+        except Exception as e:
+            print(f"[ERROR] Gagal menyimpan {self.rejected_file}: {e}")
+            return
+        moved = {id(b) for b in items}
+        self.backup_list = [b for b in self.backup_list if id(b) not in moved]
+        self.save()
 
     def get_all(self) -> List[BackupData]:
         """Ambil semua data backup"""

@@ -13,6 +13,7 @@ env/
 # Runtime & logs
 error_log.txt
 data_backup.json
+data_backup_rejected.json
 config.json
 transmission_log.txt
 buffer_cache.json
