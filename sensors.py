@@ -331,11 +331,15 @@ class ModbusSensorReader:
         self._log(f"[MODBUS] Debit Slave {config.modbus.debit_slave_id:>2} → {status_debit}", gui=not debit_ok)
         time.sleep(0.1)
 
-        # Baca COD
-        cod, cod_ok = self.read_cod()
+        # Baca COD (bisa dimatikan di Pengaturan untuk lokasi tanpa sensor COD:
+        # dikirim 0.00, cod_ok None = "tidak terpasang", bukan "gagal")
+        if config.modbus.cod_enabled:
+            cod, cod_ok = self.read_cod()
+            status_cod = f"OK ({cod:.2f} mg/L)" if cod_ok else "GAGAL"
+            self._log(f"[MODBUS] COD   Slave {config.modbus.cod_slave_id:>2} → {status_cod}", gui=not cod_ok)
+        else:
+            cod, cod_ok = 0.0, None
         sensor_data.cod = cod
-        status_cod = f"OK ({cod:.2f} mg/L)" if cod_ok else "GAGAL"
-        self._log(f"[MODBUS] COD   Slave {config.modbus.cod_slave_id:>2} → {status_cod}", gui=not cod_ok)
 
         # Baca NH3-N (opsional — aktifkan di Pengaturan jika sensor terpasang)
         if config.modbus.nh3n_enabled:
@@ -357,7 +361,9 @@ class ModbusSensorReader:
         sensor_data.debit_ok = debit_ok
         sensor_data.cod_ok   = cod_ok
 
-        flags = [ph_ok, tss_ok, debit_ok, cod_ok]
+        flags = [ph_ok, tss_ok, debit_ok]
+        if config.modbus.cod_enabled:
+            flags.append(cod_ok)
         if config.modbus.nh3n_enabled:
             flags.append(bool(sensor_data.nh3n_ok))
         total_ok = sum(flags)

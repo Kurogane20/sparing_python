@@ -313,6 +313,19 @@ class DataBackupManager:
             self.save()
         return dropped
 
+    def purge_server(self, server_num: int, server_url: str = "") -> int:
+        """Buang semua backup ke satu server (mis. KLHK dimatikan), termasuk
+        backup format lama ke URL-nya. Mengembalikan jumlah yang dibuang."""
+        kept = [
+            b for b in self.backup_list
+            if b.server_num != server_num and not (server_url and b.server_url == server_url)
+        ]
+        dropped = len(self.backup_list) - len(kept)
+        if dropped:
+            self.backup_list = kept
+            self.save()
+        return dropped
+
     def upgrade_legacy_tokens(self, server_nums: dict) -> int:
         """Ubah backup format lama (token JWT jadi, tanpa payload) menjadi
         payload mentah dengan mendekode isi token-nya.

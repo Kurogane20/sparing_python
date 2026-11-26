@@ -20,6 +20,12 @@ LOG_FILE = "transmission_log.txt"
 from config import config
 from models import SensorDataBuffer, BackupData, DataBackupManager
 
+
+def failed_targets(ok_mm: Optional[bool], ok_klhk: Optional[bool]) -> str:
+    """Server yang GAGAL dikirimi ("MM", "KLHK", "MM+KLHK" atau "").
+    None = tidak dicoba (mis. KLHK dimatikan) — itu bukan kegagalan."""
+    return "+".join(name for name, ok in (("MM", ok_mm), ("KLHK", ok_klhk)) if ok is False)
+
 class JWTEncoder:
     """
     Encoder JWT sederhana dengan algoritma HS256
@@ -98,6 +104,7 @@ class APIClient:
             {config.server.uid_1, config.server.uid_2})
         if _dropped:
             print(f"[INFO] {_dropped} backup uid lama dibersihkan (uid berganti)")
+        self._drop_klhk_backlog()
         self._session = requests.Session()
         self._session.headers.update({
             'Content-Type': 'application/json',
@@ -192,6 +199,9 @@ class APIClient:
             print("[WARN] Menggunakan secret key default untuk server 1")
 
         # Server 2 — spec belum tersedia, uid tidak dikirim
+        if not config.server.klhk_enabled:
+            self.secret_key_2 = ""   # KLHK dimatikan: tidak ada key, tidak ada kiriman
+            return success
         key2, ok2 = self.fetch_secret_key(config.server.secret_key_url_2)
         if ok2:
             self.secret_key_2 = key2
@@ -201,6 +211,14 @@ class APIClient:
             print("[WARN] Menggunakan secret key default untuk server 2")
 
         return success
+
+    def _drop_klhk_backlog(self) -> None:
+        """KLHK dimatikan: antrean KLHK tidak akan pernah dikirim — buang."""
+        if config.server.klhk_enabled:
+            return
+        dropped = self.backup_manager.purge_server(2, config.server.server_url_2)
+        if dropped:
+            print(f"[INFO] KLHK dimatikan — {dropped} backup KLHK dibuang")
     
     def create_jwt_token(self, uid: str, secret_key: str, 
                          data_buffer: SensorDataBuffer, 
@@ -321,37 +339,41 @@ class APIClient:
     def _secret_for(self, server_num: int) -> str:
         return self.secret_key_1 if server_num == 1 else self.secret_key_2
 
-    def send_all_data(self, data_buffer: SensorDataBuffer) -> Tuple[bool, bool]:
+    def send_all_data(self, data_buffer: SensorDataBuffer) -> Tuple[bool, Optional[bool]]:
         """
         Kirim data ke kedua server
         Args:
             data_buffer: Buffer data sensor
         Returns:
-            (sukses_server1, sukses_server2)
+            (sukses_server1, sukses_server2) — sukses_server2 None jika KLHK
+            dimatikan (tidak dicoba, bukan gagal)
         """
         payload1, payload2 = self._build_payloads(data_buffer)
+        klhk = config.server.klhk_enabled
 
         # Cek koneksi internet
         if not self.check_internet_connection():
             print("[WARN] Tidak ada koneksi internet, menyimpan ke backup")
             self._backup_payload(payload1, 1)
-            self._backup_payload(payload2, 2)
-            return False, False
+            if klhk:
+                self._backup_payload(payload2, 2)
+            return False, (False if klhk else None)
 
         # Coba kirim data backup terlebih dahulu
         self._send_backup_data()
 
         token1 = JWTEncoder.create_jwt(payload1, self.secret_key_1) if self.secret_key_1 else ""
-        token2 = JWTEncoder.create_jwt(payload2, self.secret_key_2) if self.secret_key_2 else ""
-
-        # Kirim ke kedua server (token kosong = gagal → masuk backup)
+        # Kirim ke server 1 (token kosong = gagal → masuk backup)
         success1 = bool(token1) and self.send_data(config.server.server_url_1, token1)
-        success2 = bool(token2) and self.send_data(config.server.server_url_2, token2)
-
         # Simpan payload mentah ke backup jika gagal —
         # token dibuat ulang saat retry dengan key terkini
         if not success1:
             self._backup_payload(payload1, 1)
+        if not klhk:
+            return success1, None
+
+        token2 = JWTEncoder.create_jwt(payload2, self.secret_key_2) if self.secret_key_2 else ""
+        success2 = bool(token2) and self.send_data(config.server.server_url_2, token2)
         if not success2:
             self._backup_payload(payload2, 2)
 
@@ -389,6 +411,7 @@ class APIClient:
         rejected. Tanpa bukti server menerima data, penolakan bisa berarti
         masalah konfigurasi (site belum terdaftar) — server dilewati saja.
         """
+        self._drop_klhk_backlog()   # KLHK bisa dimatikan lewat Pengaturan saat berjalan
         if not self.backup_manager.has_pending_data():
             return
 
@@ -458,6 +481,9 @@ class APIClient:
             print("[INFO] Secret key server 1 diperbarui")
             self.secret_key_1 = new_key1
 
+        if not config.server.klhk_enabled:
+            self.secret_key_2 = ""
+            return
         new_key2, ok2 = self.fetch_secret_key(config.server.secret_key_url_2)
         if ok2 and new_key2 != self.secret_key_2:
             print("[INFO] Secret key server 2 diperbarui")

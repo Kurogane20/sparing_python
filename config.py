@@ -26,6 +26,9 @@ class ServerConfig:
     server_url_2: str = "https://sparing.kemenlh.go.id/api/send-hourly"
     secret_key_url_2: str = "https://sparing.kemenlh.go.id/api/secret-sensor"
     uid_2: str = "tesuid2"
+    # Kirim ke KLHK? False (mis. uid KLHK belum terbit): tidak ada kiriman,
+    # key, maupun backup ke KLHK, dan antrean KLHK lama dibuang
+    klhk_enabled: bool = True
 
     @property
     def logger_heartbeat_url(self) -> str:
@@ -64,6 +67,9 @@ class ModbusConfig:
 
     # Sensor NH3-N opsional — False: nilai dikirim 0.00, LED abu-abu
     nh3n_enabled: bool = False
+    # Sensor COD terpasang? False: tidak dibaca, dikirim 0.00, LED abu-abu,
+    # dan tidak dilaporkan "gagal" ke server monitoring (lokasi tanpa COD)
+    cod_enabled: bool = True
 
     # Nilai nominal arus/tegangan untuk payload server 1
     # (belum ada sensor pengukur daya; 0.0 = kirim nol seperti sebelumnya)

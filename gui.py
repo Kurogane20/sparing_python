@@ -117,8 +117,16 @@ class SignalBridge(QObject):
     log_entry         = pyqtSignal(str)
     secret_key_update = pyqtSignal(str, str)   # (preview_key1, preview_key2)
     modbus_log        = pyqtSignal(str)
-    server_status_update = pyqtSignal(bool, bool)  # (sukses_server1, sukses_server2)
+    # (sukses_server1, sukses_server2) — None = tidak dicoba (KLHK dimatikan)
+    server_status_update = pyqtSignal(object, object)
     backup_count_update  = pyqtSignal(int)         # jumlah data backup pending
+
+
+def send_status_text(ok, now: str):
+    """Teks + warna status kirim terakhir satu server. None = server dimatikan."""
+    if ok is None:
+        return "NONAKTIF", T.FG3
+    return (f"OK {now}", T.OK) if ok else (f"GAGAL {now}", T.ERR)
 
 # ── Sparkline ─────────────────────────────────────────────────
 
@@ -391,6 +399,14 @@ class SettingsDialog(QDialog):
         w = QWidget(); vb = QVBoxLayout(w); vb.setSpacing(8)
         g = QGroupBox("Server 2 – KLHK")
         fm = QFormLayout(g); fm.setSpacing(8); fm.setContentsMargins(10,16,10,10)
+        self._cb_klhk = QCheckBox("Kirim data ke KLHK")
+        self._cb_klhk.setChecked(config.server.klhk_enabled)
+        self._cb_klhk.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        fm.addRow(self._cb_klhk)
+        desc_klhk = QLabel("Kosong (mis. UID KLHK belum terbit): tidak dikirim ke KLHK "
+                           "dan antrean KLHK dibuang")
+        desc_klhk.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_klhk.setWordWrap(True)
+        fm.addRow(desc_klhk)
         self.e_uid = QLineEdit(config.server.uid_2)
         self.e_url = QLineEdit(config.server.server_url_2)
         self.e_sk  = QLineEdit(config.server.secret_key_url_2)
@@ -488,6 +504,12 @@ class SettingsDialog(QDialog):
 
         g3 = QGroupBox("Konfigurasi Sensor COD")
         g3vb = QVBoxLayout(g3); g3vb.setSpacing(6); g3vb.setContentsMargins(10,16,10,10)
+        self._cb_cod = QCheckBox(f"Sensor COD terpasang (Slave {config.modbus.cod_slave_id})")
+        self._cb_cod.setChecked(config.modbus.cod_enabled)
+        self._cb_cod.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
+        desc_cod_on = QLabel("Kosong: COD tidak dibaca, dikirim 0.00 dan LED abu-abu")
+        desc_cod_on.setStyleSheet(f"color:{T.FG3};font-size:9px;"); desc_cod_on.setWordWrap(True)
+        g3vb.addWidget(self._cb_cod); g3vb.addWidget(desc_cod_on)
         self._cb_cod_int = QCheckBox("Integer/10 (Arduino ModbusMaster)")
         self._cb_cod_int.setChecked(config.modbus.cod_integer_mode)
         self._cb_cod_int.setStyleSheet(f"color:{T.FG1};font-size:11px;font-weight:bold;")
@@ -621,6 +643,7 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         try:
+            config.server.klhk_enabled     = self._cb_klhk.isChecked()
             config.server.uid_2            = self.e_uid.text().strip()
             config.server.server_url_2     = self.e_url.text().strip()
             config.server.secret_key_url_2 = self.e_sk.text().strip()
@@ -635,6 +658,7 @@ class SettingsDialog(QDialog):
             config.modbus.debit_closed_channel = self._cb_closed.isChecked()
             config.modbus.cod_integer_mode     = self._cb_cod_int.isChecked()
             config.modbus.nh3n_enabled         = self._cb_nh3n.isChecked()
+            config.modbus.cod_enabled          = self._cb_cod.isChecked()
             config.modbus.anomaly_enabled      = self._cb_anomaly.isChecked()
             config.save()
         except Exception as e:
@@ -1336,7 +1360,7 @@ class MainWindow(QMainWindow):
         # Baris status = hasil KIRIM terakhir per server (bukan cek internet)
         s_sv = Section("Status Server", color=T.BLUE)
         self._mm_conn = s_sv.row("Mitra Mutiara", "MENUNGGU", T.FG2)
-        self._kl_conn = s_sv.row("KLHK", "MENUNGGU", T.FG2)
+        self._kl_conn = s_sv.row("KLHK", "MENUNGGU" if config.server.klhk_enabled else "NONAKTIF", T.FG2)
         self._kl_uid  = s_sv.row("UID KLHK", config.server.uid_2)
         self._mm_key  = s_sv.row("Key MM", "–", T.FG3)
         self._kl_key  = s_sv.row("Key KLHK", "–", T.FG3)
@@ -1599,12 +1623,13 @@ class MainWindow(QMainWindow):
             f"background:{T.rgba(col,18)};padding:2px 4px;"
         )
 
-    def _on_server_status(self, ok1: bool, ok2: bool):
-        """Update status per server berdasarkan hasil kirim nyata."""
+    def _on_server_status(self, ok1, ok2):
+        """Update status per server berdasarkan hasil kirim nyata
+        (None = server dimatikan, tidak dicoba)."""
         now = datetime.now().strftime("%H:%M")
         for lb, ok in ((self._mm_conn, ok1), (self._kl_conn, ok2)):
-            lb.setText(f"OK {now}" if ok else f"GAGAL {now}")
-            col = T.OK if ok else T.ERR
+            text, col = send_status_text(ok, now)
+            lb.setText(text)
             lb.setStyleSheet(
                 f"color:{col};font-size:11px;font-weight:bold;font-family:'{T.MONO}';"
             )
@@ -1786,6 +1811,8 @@ class MainWindow(QMainWindow):
 
     def refresh_sidebar(self):
         self._kl_uid.setText(config.server.uid_2)
+        if not config.server.klhk_enabled:
+            self._kl_conn.setText("NONAKTIF")
         self._off_ph.setText(f"{config.offsets.ph_factor:.3f} ×")
         self._off_tss.setText(f"{config.offsets.tss_factor:.3f} ×")
         self._off_dbt.setText(f"{config.offsets.debit_factor:.3f} ×")
