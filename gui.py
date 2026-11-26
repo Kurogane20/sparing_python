@@ -1093,11 +1093,11 @@ class MainWindow(QMainWindow):
         hl.addWidget(self._fs_btn)
 
         hist_btn = action_btn("RIWAYAT", T.BLUE)
-        hist_btn.mousePressEvent = lambda _: HistoryDialog(self).exec()
+        hist_btn.mousePressEvent = lambda _: self._open_dialog(HistoryDialog)
         hl.addWidget(hist_btn)
 
         cfg_btn = action_btn("PENGATURAN", T.AMBER)
-        cfg_btn.mousePressEvent = lambda _: SettingsDialog(self).exec()
+        cfg_btn.mousePressEvent = lambda _: self._open_dialog(SettingsDialog)
         hl.addWidget(cfg_btn)
 
         hl.addSpacing(4)
@@ -1122,6 +1122,15 @@ class MainWindow(QMainWindow):
         self._clk = QTimer()
         self._clk.timeout.connect(self._tick)
         self._clk.start(1000)
+
+    def _open_dialog(self, dialog_cls) -> None:
+        """Buka dialog modal dari handler mousePressEvent.
+
+        Handler event Qt adalah virtual void: PyQt >= 6.11 menghentikan seluruh
+        aplikasi (sipBadCatcherResult → SIGABRT) bila handler mengembalikan nilai,
+        dan QDialog.exec() mengembalikan int — jadi hasilnya sengaja dibuang.
+        """
+        dialog_cls(self).exec()
 
     def _toggle_fullscreen(self, _=None):
         if self.isFullScreen():
