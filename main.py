@@ -406,6 +406,24 @@ class AQMSWorker:
 # MAIN APPLICATION
 # ============================================================
 
+def install_term_handler(app):
+    """systemd stop/restart mengirim SIGTERM. Hentikan event loop Qt agar blok
+    finally di main() berjalan: worker.stop() menulis penanda shutdown bersih
+    (tanpanya setiap restart terencana dilaporkan sebagai crash) dan config.save().
+
+    Loop Qt berjalan di C++ dan tidak pernah memberi Python kesempatan menjalankan
+    signal handler, jadi timer kosong 0,5 dtk membangunkan interpreter.
+    Kembalikan timer-nya — pemanggil harus menyimpannya agar tidak di-GC.
+    """
+    import signal
+    from PyQt6.QtCore import QTimer
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)
+    timer.start(500)
+    return timer
+
+
 def main():
     """Entry point aplikasi"""
     parser = argparse.ArgumentParser(description='AQMS Monitoring System - Raspberry Pi 4')
@@ -486,6 +504,9 @@ def main():
 
     # Mulai worker
     worker.start()
+
+    # SIGTERM (systemctl stop/restart, shutdown) → keluar lewat finally di bawah
+    _term_timer = install_term_handler(app)  # noqa: F841 — harus tetap hidup
 
     # Run aplikasi
     try:
