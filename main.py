@@ -24,7 +24,7 @@ from typing import Optional
 from config import config
 from models import SensorData, SensorDataBuffer, OperationalState, OperationalStatus
 from sensors import create_sensor_reader, ModbusSensorReader, DummySensorReader
-from api_client import APIClient
+from api_client import APIClient, failed_targets
 from history import SensorHistory
 from anomaly import AnomalyDetector
 from gui import create_application, MainWindow, SignalBridge
@@ -367,9 +367,9 @@ class AQMSWorker:
 
         # Rekam status kirim terakhir per server untuk heartbeat telemetri
         self._last_send_ok_mm = success1
-        self._last_send_ok_klhk = success2
-        if self._event_log is not None and not (success1 and success2):
-            which = "MM+KLHK" if not (success1 or success2) else ("KLHK" if success1 else "MM")
+        self._last_send_ok_klhk = success2   # None = KLHK dimatikan (tidak dicoba)
+        which = failed_targets(success1, success2)
+        if self._event_log is not None and which:
             self._event_log.append("send_fail", severity="warning", detail=f"gagal kirim: {which}")
 
         # Update status per server + backup pending di sidebar GUI
